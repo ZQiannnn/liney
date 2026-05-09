@@ -212,14 +212,58 @@ EOF
 
   if [[ -n "$NOTARYTOOL_PROFILE" ]]; then
     echo "Using notarytool profile: $NOTARYTOOL_PROFILE"
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+    NOTARY_AUTH_ARGS=(--keychain-profile "$NOTARYTOOL_PROFILE")
   else
-    xcrun notarytool submit "$DMG_PATH" \
-      --apple-id "$APPLE_ID" \
-      --team-id "$APPLE_TEAM_ID" \
-      --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-      --wait
+    NOTARY_AUTH_ARGS=(
+      --apple-id "$APPLE_ID"
+      --team-id "$APPLE_TEAM_ID"
+      --password "$APPLE_APP_SPECIFIC_PASSWORD"
+    )
   fi
+
+  echo "Submitting $DMG_PATH for notarization..."
+  SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" "${NOTARY_AUTH_ARGS[@]}")
+  echo "$SUBMIT_OUTPUT"
+  SUBMISSION_ID=$(printf '%s\n' "$SUBMIT_OUTPUT" \
+    | sed -n 's/^[[:space:]]*id:[[:space:]]*//p' \
+    | head -n1)
+  if [[ -z "$SUBMISSION_ID" ]]; then
+    echo "Failed to parse notarization submission id." >&2
+    exit 1
+  fi
+  echo "Submission id: $SUBMISSION_ID"
+
+  POLL_INTERVAL="${NOTARYTOOL_POLL_INTERVAL:-30}"
+  POLL_TIMEOUT="${NOTARYTOOL_POLL_TIMEOUT:-1800}"
+  POLL_DEADLINE=$(( $(date +%s) + POLL_TIMEOUT ))
+  while :; do
+    if (( $(date +%s) > POLL_DEADLINE )); then
+      echo "Notarization polling timed out after ${POLL_TIMEOUT}s (id: $SUBMISSION_ID)." >&2
+      exit 1
+    fi
+    if ! INFO_OUTPUT=$(xcrun notarytool info "$SUBMISSION_ID" "${NOTARY_AUTH_ARGS[@]}" 2>&1); then
+      echo "notarytool info failed; retrying in ${POLL_INTERVAL}s..." >&2
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
+    STATUS=$(printf '%s\n' "$INFO_OUTPUT" \
+      | sed -n 's/^[[:space:]]*status:[[:space:]]*//p' \
+      | head -n1)
+    echo "Notarization status: ${STATUS:-unknown}"
+    case "$STATUS" in
+      Accepted)
+        break
+        ;;
+      "In Progress"|"")
+        sleep "$POLL_INTERVAL"
+        ;;
+      *)
+        echo "Notarization ended with status: $STATUS" >&2
+        xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH_ARGS[@]}" >&2 || true
+        exit 1
+        ;;
+    esac
+  done
 
   xcrun stapler staple "$APP_BUNDLE_PATH"
   xcrun stapler staple "$DMG_PATH"

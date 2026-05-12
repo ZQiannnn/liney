@@ -252,11 +252,31 @@ DIST_DSYM_PATH="$OUTPUT_DIR/dSYMs/$APP_NAME-$VERSION.app.dSYM"
 DIST_DSYM_ZIP_PATH="$DIST_DSYM_PATH.zip"
 RELEASE_DONE=0
 DID_BUMP=0
+FAILED_LINE=""
+FAILED_COMMAND=""
 PREVIOUS_TAG="$(git tag -l 'v*' --sort=-version:refname | head -n 1 || true)"
 
+record_failure() {
+  FAILED_LINE="$1"
+  FAILED_COMMAND="$2"
+}
+trap 'record_failure "$LINENO" "$BASH_COMMAND"' ERR
+
 cleanup() {
+  local exit_code=$?
   if [[ "$RELEASE_DONE" -eq 0 ]]; then
-    git restore --source=HEAD --staged --worktree -- "$PROJECT_FILE" "$APPCAST_FILE" >/dev/null 2>&1 || true
+    if [[ "$exit_code" -ne 0 ]]; then
+      if [[ -n "$FAILED_COMMAND" ]]; then
+        echo "Release aborted (exit $exit_code) at release_homebrew.sh:$FAILED_LINE — $FAILED_COMMAND" >&2
+      else
+        echo "Release aborted with exit code $exit_code." >&2
+      fi
+    fi
+    if ! git diff --quiet -- "$PROJECT_FILE" "$APPCAST_FILE" 2>/dev/null \
+        || ! git diff --cached --quiet -- "$PROJECT_FILE" "$APPCAST_FILE" 2>/dev/null; then
+      echo "Reverting uncommitted changes to $(basename "$PROJECT_FILE") and $(basename "$APPCAST_FILE")." >&2
+      git restore --source=HEAD --staged --worktree -- "$PROJECT_FILE" "$APPCAST_FILE" >/dev/null 2>&1 || true
+    fi
   fi
   if [[ -n "$RELEASE_NOTES_FILE" && -f "$RELEASE_NOTES_FILE" ]]; then
     rm -f "$RELEASE_NOTES_FILE"

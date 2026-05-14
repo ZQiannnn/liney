@@ -110,4 +110,22 @@ fi
 
 echo "Uploading dSYM to Sentry: $DSYM_PATH"
 echo "Sentry target: $SENTRY_ORG/$SENTRY_PROJECT"
-"$SENTRY_CLI" "${UPLOAD_ARGS[@]}" "$DSYM_PATH"
+
+# Retry around flaky TLS / network errors (e.g. curl 56 "bad record mac"),
+# which sentry-cli surfaces as a fatal non-zero exit. Configurable via env.
+MAX_ATTEMPTS="${SENTRY_UPLOAD_MAX_ATTEMPTS:-3}"
+RETRY_DELAY="${SENTRY_UPLOAD_RETRY_DELAY:-10}"
+attempt=1
+while :; do
+  if "$SENTRY_CLI" "${UPLOAD_ARGS[@]}" "$DSYM_PATH"; then
+    break
+  fi
+  rc=$?
+  if (( attempt >= MAX_ATTEMPTS )); then
+    echo "sentry-cli upload failed after ${attempt} attempt(s) (exit ${rc})." >&2
+    exit "$rc"
+  fi
+  echo "sentry-cli upload failed (exit ${rc}); retrying in ${RETRY_DELAY}s (attempt $((attempt + 1))/${MAX_ATTEMPTS})..." >&2
+  sleep "$RETRY_DELAY"
+  attempt=$((attempt + 1))
+done

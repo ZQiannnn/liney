@@ -225,17 +225,24 @@ EOF
   echo "Submitting $DMG_PATH for notarization..."
   NOTARY_SUBMIT_LOG="$OUTPUT_DIR/notarytool-submit.log"
   : >"$NOTARY_SUBMIT_LOG"
-  if ! xcrun notarytool submit "$DMG_PATH" "${NOTARY_AUTH_ARGS[@]}" 2>&1 | tee "$NOTARY_SUBMIT_LOG"; then
-    echo "notarytool submit failed (see $NOTARY_SUBMIT_LOG)" >&2
-    exit 1
-  fi
+  # `xcrun notarytool submit` occasionally crashes with SIGBUS *after* Apple
+  # has already returned the submission id. Capture the exit code without
+  # aborting, then fall back to the log: if an id was issued, the upload
+  # actually succeeded and we should proceed to poll status.
+  set +e
+  xcrun notarytool submit "$DMG_PATH" "${NOTARY_AUTH_ARGS[@]}" 2>&1 | tee "$NOTARY_SUBMIT_LOG"
+  NOTARY_SUBMIT_RC=${PIPESTATUS[0]}
+  set -e
   SUBMIT_OUTPUT=$(<"$NOTARY_SUBMIT_LOG")
   SUBMISSION_ID=$(printf '%s\n' "$SUBMIT_OUTPUT" \
     | sed -n 's/^[[:space:]]*id:[[:space:]]*//p' \
     | head -n1)
   if [[ -z "$SUBMISSION_ID" ]]; then
-    echo "Failed to parse notarization submission id." >&2
+    echo "notarytool submit failed (exit $NOTARY_SUBMIT_RC) and no submission id was parsed (see $NOTARY_SUBMIT_LOG)" >&2
     exit 1
+  fi
+  if [[ "$NOTARY_SUBMIT_RC" -ne 0 ]]; then
+    echo "notarytool submit exited $NOTARY_SUBMIT_RC after receiving submission id $SUBMISSION_ID; continuing to poll status." >&2
   fi
   echo "Submission id: $SUBMISSION_ID"
 

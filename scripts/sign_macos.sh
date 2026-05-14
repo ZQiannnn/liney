@@ -246,13 +246,19 @@ EOF
   fi
   echo "Submission id: $SUBMISSION_ID"
 
-  POLL_INTERVAL="${NOTARYTOOL_POLL_INTERVAL:-30}"
-  POLL_TIMEOUT="${NOTARYTOOL_POLL_TIMEOUT:-1800}"
+  # Best-effort: poll briefly so we can staple if Apple is fast, but don't
+  # block the release if notarization is still queued. An un-stapled DMG is
+  # still notarized server-side — Gatekeeper fetches the ticket online on
+  # first launch. Hard-fail only on an explicit reject (Invalid/Rejected).
+  POLL_INTERVAL="${NOTARYTOOL_POLL_INTERVAL:-15}"
+  POLL_TIMEOUT="${NOTARYTOOL_POLL_TIMEOUT:-120}"
   POLL_DEADLINE=$(( $(date +%s) + POLL_TIMEOUT ))
+  NOTARIZATION_ACCEPTED=0
   while :; do
     if (( $(date +%s) > POLL_DEADLINE )); then
-      echo "Notarization polling timed out after ${POLL_TIMEOUT}s (id: $SUBMISSION_ID)." >&2
-      exit 1
+      echo "Notarization still pending after ${POLL_TIMEOUT}s; continuing without stapling (id: $SUBMISSION_ID)." >&2
+      echo "Check later with: xcrun notarytool info $SUBMISSION_ID --keychain-profile <profile>" >&2
+      break
     fi
     if ! INFO_OUTPUT=$(xcrun notarytool info "$SUBMISSION_ID" "${NOTARY_AUTH_ARGS[@]}" 2>&1); then
       echo "notarytool info failed; retrying in ${POLL_INTERVAL}s..." >&2
@@ -265,6 +271,7 @@ EOF
     echo "Notarization status: ${STATUS:-unknown}"
     case "$STATUS" in
       Accepted)
+        NOTARIZATION_ACCEPTED=1
         break
         ;;
       "In Progress"|"")
@@ -278,9 +285,13 @@ EOF
     esac
   done
 
-  xcrun stapler staple "$APP_BUNDLE_PATH"
-  xcrun stapler staple "$DMG_PATH"
-  xcrun stapler validate "$DMG_PATH"
+  if [[ "$NOTARIZATION_ACCEPTED" == "1" ]]; then
+    xcrun stapler staple "$APP_BUNDLE_PATH"
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+  else
+    echo "Skipping stapler: notarization not yet Accepted. DMG will rely on online Gatekeeper check at first launch." >&2
+  fi
 fi
 
 echo "Signed app bundle: $APP_BUNDLE_PATH"

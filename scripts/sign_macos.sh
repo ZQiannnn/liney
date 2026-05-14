@@ -223,8 +223,13 @@ EOF
   fi
 
   echo "Submitting $DMG_PATH for notarization..."
-  SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" "${NOTARY_AUTH_ARGS[@]}")
-  echo "$SUBMIT_OUTPUT"
+  NOTARY_SUBMIT_LOG="$OUTPUT_DIR/notarytool-submit.log"
+  : >"$NOTARY_SUBMIT_LOG"
+  if ! xcrun notarytool submit "$DMG_PATH" "${NOTARY_AUTH_ARGS[@]}" 2>&1 | tee "$NOTARY_SUBMIT_LOG"; then
+    echo "notarytool submit failed (see $NOTARY_SUBMIT_LOG)" >&2
+    exit 1
+  fi
+  SUBMIT_OUTPUT=$(<"$NOTARY_SUBMIT_LOG")
   SUBMISSION_ID=$(printf '%s\n' "$SUBMIT_OUTPUT" \
     | sed -n 's/^[[:space:]]*id:[[:space:]]*//p' \
     | head -n1)

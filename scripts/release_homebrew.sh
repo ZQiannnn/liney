@@ -287,6 +287,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Resume detection: if a tag matching the current MARKETING_VERSION already
+# exists locally, this is a re-run after a previous publish step failed
+# (e.g. flaky TLS during `gh release create`). Skip everything that was
+# already done, only redo the publish.
+RESUMING=0
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+  RESUMING=1
+  SKIP_BUMP=1
+  echo "Tag v$VERSION already exists locally — resuming release upload only." >&2
+  echo "Skipping: bump, sign/notarize, dSYM archive+upload, app zip, appcast regen, commit, tag push." >&2
+  echo "All artifacts must already exist in $OUTPUT_DIR." >&2
+  # On resume the latest tag IS the current release, so step back one for
+  # the release-notes diff.
+  PREVIOUS_TAG="$(git tag -l 'v*' --sort=-version:refname | grep -v "^v${VERSION}\$" | head -n 1 || true)"
+fi
+
 if [[ "$SKIP_BUMP" != "1" ]]; then
   "$ROOT_DIR/scripts/bump_version.sh" "$BUMP_PART"
   DID_BUMP=1
@@ -299,7 +315,9 @@ DIST_ZIP_PATH="$OUTPUT_DIR/$APP_NAME-$VERSION.app.zip"
 DIST_DSYM_PATH="$OUTPUT_DIR/dSYMs/$APP_NAME-$VERSION.app.dSYM"
 DIST_DSYM_ZIP_PATH="$DIST_DSYM_PATH.zip"
 
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+if [[ "$RESUMING" != "1" ]] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  # Tag appeared between the initial check and now (e.g. bump took us to a
+  # version that already has a tag — should not normally happen).
   echo "Tag already exists: $TAG" >&2
   exit 1
 fi
@@ -319,30 +337,34 @@ if [[ "$SKIP_NOTARIZE" != "1" ]]; then
   SIGN_ARGS+=(--notarize)
 fi
 
-NOTARYTOOL_PROFILE="$NOTARYTOOL_PROFILE" \
-APPLE_ID="$APPLE_ID" \
-APPLE_TEAM_ID="$APPLE_TEAM_ID" \
-APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" \
-PROJECT_PATH="$PROJECT_PATH" \
-SCHEME="$SCHEME" \
-"$SIGN_SCRIPT" "${SIGN_ARGS[@]}"
+if [[ "$RESUMING" != "1" ]]; then
+  NOTARYTOOL_PROFILE="$NOTARYTOOL_PROFILE" \
+  APPLE_ID="$APPLE_ID" \
+  APPLE_TEAM_ID="$APPLE_TEAM_ID" \
+  APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" \
+  PROJECT_PATH="$PROJECT_PATH" \
+  SCHEME="$SCHEME" \
+  "$SIGN_SCRIPT" "${SIGN_ARGS[@]}"
+fi
 
 if [[ ! -f "$DIST_DMG_PATH" ]]; then
   echo "Missing packaged DMG: $DIST_DMG_PATH" >&2
   exit 1
 fi
 
-APP_NAME="$APP_NAME" \
-VERSION="$VERSION" \
-OUTPUT_DIR="$OUTPUT_DIR" \
-"$ARCHIVE_DSYM_SCRIPT" --version "$VERSION"
+if [[ "$RESUMING" != "1" ]]; then
+  APP_NAME="$APP_NAME" \
+  VERSION="$VERSION" \
+  OUTPUT_DIR="$OUTPUT_DIR" \
+  "$ARCHIVE_DSYM_SCRIPT" --version "$VERSION"
+fi
 
 if [[ ! -d "$DIST_DSYM_PATH" || ! -f "$DIST_DSYM_ZIP_PATH" ]]; then
   echo "Missing archived dSYM artifacts: $DIST_DSYM_PATH / $DIST_DSYM_ZIP_PATH" >&2
   exit 1
 fi
 
-if [[ "$SKIP_SENTRY_DSYM_UPLOAD" != "1" ]]; then
+if [[ "$RESUMING" != "1" && "$SKIP_SENTRY_DSYM_UPLOAD" != "1" ]]; then
   APP_NAME="$APP_NAME" \
   OUTPUT_DIR="$OUTPUT_DIR" \
   DSYM_PATH="$DIST_DSYM_PATH" \
@@ -350,50 +372,78 @@ if [[ "$SKIP_SENTRY_DSYM_UPLOAD" != "1" ]]; then
 fi
 
 RELEASE_NOTES_FILE="$(generate_release_notes "$VERSION" "$TAG" "$PREVIOUS_TAG" "$(basename "$DIST_DMG_PATH")")"
-sparkle_create_app_zip "$OUTPUT_DIR/$APP_NAME.app" "$DIST_ZIP_PATH"
 
-APPCAST_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/liney-appcast.XXXXXX")"
-ZIP_BASENAME="$(basename "$DIST_ZIP_PATH" .zip)"
-cp "$DIST_ZIP_PATH" "$APPCAST_STAGING_DIR/"
-cp "$RELEASE_NOTES_FILE" "$APPCAST_STAGING_DIR/$ZIP_BASENAME.md"
-if [[ -f "$APPCAST_FILE" ]]; then
-  cp "$APPCAST_FILE" "$APPCAST_STAGING_DIR/appcast.xml"
+if [[ "$RESUMING" != "1" ]]; then
+  sparkle_create_app_zip "$OUTPUT_DIR/$APP_NAME.app" "$DIST_ZIP_PATH"
+
+  APPCAST_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/liney-appcast.XXXXXX")"
+  ZIP_BASENAME="$(basename "$DIST_ZIP_PATH" .zip)"
+  cp "$DIST_ZIP_PATH" "$APPCAST_STAGING_DIR/"
+  cp "$RELEASE_NOTES_FILE" "$APPCAST_STAGING_DIR/$ZIP_BASENAME.md"
+  if [[ -f "$APPCAST_FILE" ]]; then
+    cp "$APPCAST_FILE" "$APPCAST_STAGING_DIR/appcast.xml"
+  fi
+
+  sparkle_generate_appcast \
+    "$APPCAST_STAGING_DIR" \
+    "$SPARKLE_PRIVATE_KEY_FILE" \
+    "https://github.com/$RELEASE_REPO/releases/download/$TAG/" \
+    "https://github.com/$RELEASE_REPO/releases/tag/$TAG" \
+    "$APP_HOMEPAGE" \
+    "$SPARKLE_MAX_VERSIONS" \
+    "$SPARKLE_CHANNEL" \
+    "$ROOT_DIR" \
+    "$PROJECT_PATH" \
+    "$SCHEME"
+
+  cp "$APPCAST_STAGING_DIR/appcast.xml" "$APPCAST_FILE"
+  rm -rf "$APPCAST_STAGING_DIR"
+
+  git add -- "$PROJECT_FILE" "$APPCAST_FILE"
+  if ! git diff --cached --quiet; then
+    git commit -m "chore: release $VERSION"
+    git push origin "$(git branch --show-current)"
+  fi
+
+  git tag "$TAG"
+  git push origin "$TAG"
 fi
 
-sparkle_generate_appcast \
-  "$APPCAST_STAGING_DIR" \
-  "$SPARKLE_PRIVATE_KEY_FILE" \
-  "https://github.com/$RELEASE_REPO/releases/download/$TAG/" \
-  "https://github.com/$RELEASE_REPO/releases/tag/$TAG" \
-  "$APP_HOMEPAGE" \
-  "$SPARKLE_MAX_VERSIONS" \
-  "$SPARKLE_CHANNEL" \
-  "$ROOT_DIR" \
-  "$PROJECT_PATH" \
-  "$SCHEME"
-
-cp "$APPCAST_STAGING_DIR/appcast.xml" "$APPCAST_FILE"
-rm -rf "$APPCAST_STAGING_DIR"
-
-git add -- "$PROJECT_FILE" "$APPCAST_FILE"
-if ! git diff --cached --quiet; then
-  git commit -m "chore: release $VERSION"
-  git push origin "$(git branch --show-current)"
+if [[ ! -f "$DIST_ZIP_PATH" ]]; then
+  echo "Missing app zip: $DIST_ZIP_PATH" >&2
+  exit 1
 fi
 
-git tag "$TAG"
-git push origin "$TAG"
-
-if gh release view "$TAG" >/dev/null 2>&1; then
-  gh release upload "$TAG" "$DIST_DMG_PATH" "$DIST_ZIP_PATH" "$DIST_DSYM_ZIP_PATH" "$APPCAST_FILE" --clobber
-  gh release edit "$TAG" \
-    --title "$APP_NAME $VERSION" \
-    --notes-file "$RELEASE_NOTES_FILE"
-else
-  gh release create "$TAG" "$DIST_DMG_PATH" "$DIST_ZIP_PATH" "$DIST_DSYM_ZIP_PATH" "$APPCAST_FILE" \
-    --title "$APP_NAME $VERSION" \
-    --notes-file "$RELEASE_NOTES_FILE"
-fi
+# Wrap `gh release create/upload` in a retry loop. These calls do large HTTPS
+# uploads and have hit TLS "bad record MAC" errors on flaky networks.
+GH_MAX_ATTEMPTS="${GH_RELEASE_MAX_ATTEMPTS:-3}"
+GH_RETRY_DELAY="${GH_RELEASE_RETRY_DELAY:-10}"
+gh_attempt=1
+while :; do
+  gh_rc=0
+  if gh release view "$TAG" >/dev/null 2>&1; then
+    gh release upload "$TAG" "$DIST_DMG_PATH" "$DIST_ZIP_PATH" "$DIST_DSYM_ZIP_PATH" "$APPCAST_FILE" --clobber || gh_rc=$?
+    if [[ "$gh_rc" -eq 0 ]]; then
+      gh release edit "$TAG" \
+        --title "$APP_NAME $VERSION" \
+        --notes-file "$RELEASE_NOTES_FILE" || gh_rc=$?
+    fi
+  else
+    gh release create "$TAG" "$DIST_DMG_PATH" "$DIST_ZIP_PATH" "$DIST_DSYM_ZIP_PATH" "$APPCAST_FILE" \
+      --title "$APP_NAME $VERSION" \
+      --notes-file "$RELEASE_NOTES_FILE" || gh_rc=$?
+  fi
+  if [[ "$gh_rc" -eq 0 ]]; then
+    break
+  fi
+  if (( gh_attempt >= GH_MAX_ATTEMPTS )); then
+    echo "gh release publish failed after ${gh_attempt} attempt(s) (exit ${gh_rc})." >&2
+    exit "$gh_rc"
+  fi
+  echo "gh release publish failed (exit ${gh_rc}); retrying in ${GH_RETRY_DELAY}s (attempt $((gh_attempt + 1))/${GH_MAX_ATTEMPTS})..." >&2
+  sleep "$GH_RETRY_DELAY"
+  gh_attempt=$((gh_attempt + 1))
+done
 
 if [[ "$SKIP_CASK_UPDATE" != "1" ]]; then
   SHA256="$(shasum -a 256 "$DIST_DMG_PATH" | awk '{print $1}')"

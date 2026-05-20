@@ -49,29 +49,65 @@ private struct WorkspaceSessionDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if workspace.tabs.count > 1 {
-                WorkspaceTabBarView(workspace: workspace)
+        HSplitView {
+            if workspace.isFileTreePresented {
+                WorkspaceFileTreeView(workspace: workspace, sessionController: workspace.sessionController)
+                    .frame(minWidth: 170, idealWidth: 250, maxWidth: 460)
             }
 
-            Group {
-                if let layout = workspace.layout {
-                    SplitNodeView(workspace: workspace, sessionController: workspace.sessionController, node: layout)
-                } else {
-                    VStack(spacing: 14) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(LineyTheme.mutedText)
-                        Text(localized("main.workspace.noTerminalOpen"))
-                            .font(.system(size: 14, weight: .semibold))
-                        Button(localized("main.workspace.newSession")) {
-                            store.createSession(in: workspace)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 8) {
+                if workspace.tabs.count > 1 {
+                    WorkspaceTabBarView(workspace: workspace)
                 }
+                terminalArea
             }
+            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var terminalArea: some View {
+        if let preview = workspace.previewPanel {
+            HSplitView {
+                terminalContent
+                    .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+                WorkspacePreviewPanel(
+                    content: preview,
+                    onNavigate: { workspace.openPreview($0) },
+                    onClose: { workspace.closePreview() }
+                )
+                .frame(minWidth: 300, idealWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+                .id(previewPanelIdentity(preview))
+            }
+        } else {
+            terminalContent
+        }
+    }
+
+    /// Recreate the panel only when switching between file and web modes (so a
+    /// live web session is preserved while navigating, and file→file swaps reuse
+    /// the same web view).
+    private func previewPanelIdentity(_ content: WorkspacePreviewContent) -> String {
+        content.isWeb ? "web" : "file"
+    }
+
+    @ViewBuilder
+    private var terminalContent: some View {
+        if let layout = workspace.layout {
+            SplitNodeView(workspace: workspace, sessionController: workspace.sessionController, node: layout)
+        } else {
+            VStack(spacing: 14) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(LineyTheme.mutedText)
+                Text(localized("main.workspace.noTerminalOpen"))
+                    .font(.system(size: 14, weight: .semibold))
+                Button(localized("main.workspace.newSession")) {
+                    store.createSession(in: workspace)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

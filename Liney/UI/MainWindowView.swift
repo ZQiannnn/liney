@@ -131,6 +131,50 @@ struct MainWindowView: View {
         }
     }
 
+    @ViewBuilder
+    private var webPreviewMenuContent: some View {
+        if let workspace = store.selectedWorkspace {
+            if workspace.listeningPorts.isEmpty {
+                Text(localized("main.web.noPortsDetected"))
+            } else {
+                Section(localized("main.web.detectedPorts")) {
+                    ForEach(workspace.listeningPorts, id: \.self) { port in
+                        Button("localhost:\(port)") {
+                            workspace.openPreviewForPort(port)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button(localized("main.web.openURL")) {
+                promptForWebURL(workspace)
+            }
+            if workspace.previewPanel != nil {
+                Divider()
+                Button(localized("main.web.closePreview")) {
+                    workspace.closePreview()
+                }
+            }
+        }
+    }
+
+    private func promptForWebURL(_ workspace: WorkspaceModel) {
+        let alert = NSAlert()
+        alert.messageText = localized("main.web.openURL")
+        alert.informativeText = localized("main.web.openURLPrompt")
+        alert.addButton(withTitle: localized("common.ok"))
+        alert.addButton(withTitle: localized("common.cancel"))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.placeholderString = "localhost:3000"
+        field.stringValue = workspace.listeningPorts.first.map { "localhost:\($0)" } ?? "localhost:3000"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if let url = WorkspacePreviewContent.webURL(fromUserInput: field.stringValue) {
+            workspace.openPreview(.web(url))
+        }
+    }
+
     var body: some View {
         ZStack {
             NavigationSplitView {
@@ -421,6 +465,29 @@ struct MainWindowView: View {
                 .accessibilityLabel(localized("menu.file.newTab"))
                 .help(localized("menu.file.newTab"))
 
+                Button {
+                    store.selectedWorkspace?.toggleFileTree()
+                } label: {
+                    Image(systemName: store.selectedWorkspace?.isFileTreePresented == true ? "list.bullet.indent" : "sidebar.squares.leading")
+                        .padding(4 * uiScale)
+                }
+                .scaleEffect(uiScale)
+                .disabled(!hasSelectedWorkspace)
+                .accessibilityLabel(localized("main.toolbar.toggleFileTree"))
+                .help(localized("main.toolbar.toggleFileTree"))
+
+                Menu {
+                    webPreviewMenuContent
+                } label: {
+                    Image(systemName: "globe")
+                        .padding(4 * uiScale)
+                }
+                .menuIndicator(.hidden)
+                .scaleEffect(uiScale)
+                .disabled(!hasSelectedWorkspace)
+                .accessibilityLabel(localized("main.toolbar.webPreview"))
+                .help(localized("main.toolbar.webPreview"))
+
                 Menu {
                     Button(localized("main.menu.restartFocusedSession")) {
                         guard let workspace = store.selectedWorkspace else { return }
@@ -471,6 +538,11 @@ struct MainWindowView: View {
                     Button(localized("sidebar.menu.browseFiles")) {
                         guard let workspace = store.selectedWorkspace else { return }
                         store.presentWorkspaceFileBrowser(for: workspace)
+                    }
+                    .disabled(!hasSelectedWorkspace)
+
+                    Button(store.selectedWorkspace?.isFileTreePresented == true ? localized("main.toolbar.hideFileTree") : localized("main.toolbar.toggleFileTree")) {
+                        store.selectedWorkspace?.toggleFileTree()
                     }
                     .disabled(!hasSelectedWorkspace)
 

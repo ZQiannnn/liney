@@ -559,6 +559,30 @@ private final class LineyGhosttySurfaceView: NSView {
         workspaceFocused = isFocused
         guard let surface else { return }
         ghostty_surface_set_focus(surface, isFocused)
+        if isFocused {
+            // Ghostty focus (the blinking cursor) and the AppKit first
+            // responder (keyDown delivery) are tracked separately. Reclaim the
+            // first responder so a focused surface actually receives input,
+            // deferring to the next runloop tick to avoid mutating responder
+            // state mid-layout.
+            DispatchQueue.main.async { [weak self] in
+                self?.reconcileFirstResponderForWorkspaceFocus()
+            }
+        }
+    }
+
+    private func reconcileFirstResponderForWorkspaceFocus() {
+        guard let window else { return }
+        let currentResponder = window.firstResponder
+        let firstResponderIsClaimable = currentResponder == nil || currentResponder === window
+        guard lineyGhosttyShouldReclaimFirstResponder(
+            isWorkspaceFocused: workspaceFocused,
+            windowIsKey: window.isKeyWindow,
+            isAlreadyFirstResponder: currentResponder === self,
+            firstResponderIsClaimable: firstResponderIsClaimable,
+            hasSurface: surface != nil
+        ) else { return }
+        window.makeFirstResponder(self)
     }
 
     func destroySurface() {
@@ -1681,6 +1705,22 @@ private final class LineyGhosttySurfaceView: NSView {
             }
             windowObservers.append(observer)
         }
+
+        // When the window regains key status, AppKit restores whatever was
+        // first responder before — which may not be the workspace-focused
+        // surface if the two focus states had drifted apart. Reconcile so the
+        // focused pane keeps receiving keystrokes after the app returns to the
+        // foreground.
+        let keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.reconcileFirstResponderForWorkspaceFocus()
+            }
+        }
+        windowObservers.append(keyObserver)
     }
 
     deinit {

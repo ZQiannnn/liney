@@ -784,4 +784,77 @@ final class LineyGhosttyInputSupportTests: XCTestCase {
             )
         )
     }
+
+    func testReclaimsFirstResponderWhenFocusedSurfaceLostInputInKeyWindow() {
+        XCTAssertTrue(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: true,
+                windowIsKey: true,
+                isAlreadyFirstResponder: false,
+                firstResponderIsClaimable: true,
+                hasSurface: true
+            )
+        )
+    }
+
+    func testDoesNotReclaimFirstResponderWhenAlreadyFirstResponder() {
+        XCTAssertFalse(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: true,
+                windowIsKey: true,
+                isAlreadyFirstResponder: true,
+                firstResponderIsClaimable: true,
+                hasSurface: true
+            )
+        )
+    }
+
+    func testDoesNotReclaimFirstResponderWhenAnotherControlHoldsFocus() {
+        // e.g. the in-pane search field is first responder.
+        XCTAssertFalse(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: true,
+                windowIsKey: true,
+                isAlreadyFirstResponder: false,
+                firstResponderIsClaimable: false,
+                hasSurface: true
+            )
+        )
+    }
+
+    func testDoesNotReclaimFirstResponderWhenWindowIsNotKey() {
+        XCTAssertFalse(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: true,
+                windowIsKey: false,
+                isAlreadyFirstResponder: false,
+                firstResponderIsClaimable: true,
+                hasSurface: true
+            )
+        )
+    }
+
+    func testDoesNotReclaimFirstResponderForUnfocusedPane() {
+        XCTAssertFalse(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: false,
+                windowIsKey: true,
+                isAlreadyFirstResponder: false,
+                firstResponderIsClaimable: true,
+                hasSurface: true
+            )
+        )
+    }
+
+    func testDoesNotReclaimFirstResponderWithoutSurface() {
+        XCTAssertFalse(
+            lineyGhosttyShouldReclaimFirstResponder(
+                isWorkspaceFocused: true,
+                windowIsKey: true,
+                isAlreadyFirstResponder: false,
+                firstResponderIsClaimable: true,
+                hasSurface: false
+            )
+        )
+    }
 }

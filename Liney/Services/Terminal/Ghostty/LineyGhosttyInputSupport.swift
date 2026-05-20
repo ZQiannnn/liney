@@ -117,6 +117,32 @@ enum LineyGhosttyTextInputCommandAction: Equatable {
     }
 }
 
+/// Decides whether a workspace-focused terminal surface should reclaim the
+/// window's first responder.
+///
+/// The surface tracks focus in two independent places: Ghostty's own focus
+/// state (which drives the blinking cursor) and AppKit's first responder
+/// (which drives `keyDown:` delivery). `setWorkspaceFocus` only updates the
+/// former, so after a SwiftUI re-attach or a window key transition a pane can
+/// end up with a blinking cursor that never receives keystrokes. Reclaiming the
+/// first responder in that state restores input.
+///
+/// `firstResponderIsClaimable` must be true only when nothing else legitimately
+/// holds keyboard focus in the window (i.e. the responder is the window itself
+/// or nil). This avoids stealing focus from sibling controls such as the search
+/// field.
+func lineyGhosttyShouldReclaimFirstResponder(
+    isWorkspaceFocused: Bool,
+    windowIsKey: Bool,
+    isAlreadyFirstResponder: Bool,
+    firstResponderIsClaimable: Bool,
+    hasSurface: Bool
+) -> Bool {
+    guard isWorkspaceFocused, windowIsKey, hasSurface else { return false }
+    guard !isAlreadyFirstResponder else { return false }
+    return firstResponderIsClaimable
+}
+
 func lineyGhosttyShouldEnableIMEDebugLogging(
     environment: [String: String]
 ) -> Bool {

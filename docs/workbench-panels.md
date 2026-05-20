@@ -12,7 +12,11 @@ follows the focused pane's working directory**. Liney's shell integration alread
 reports `cwd` via OSC 7 (`ShellSession.reportedWorkingDirectory`); the tree
 observes the focused session and re-roots whenever you `cd`.
 
-- Toggle with the toolbar **file-tree** button or the "More actions" menu.
+- Shown by default; the **Settings → General → "Show the file tree by default"**
+  toggle (`AppSettings.directoryTreeEnabled`, default on) controls the initial
+  state, seeded once per workspace the first time it appears so a manual toggle
+  is never overridden.
+- Toggle at runtime with the toolbar **file-tree** button or the "More actions" menu.
 - Click a directory to expand/collapse; click a Markdown/HTML file to open it in
   the preview panel; click any other file to open it in the default app.
 - Right-click for: open in preview, `cd` here (injects `cd '<path>'` into the

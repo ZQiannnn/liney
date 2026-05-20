@@ -63,6 +63,9 @@ private struct WorkspaceSessionDetailView: View {
             }
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onAppear {
+            workspace.applyDefaultFileTreeVisibilityIfNeeded(store.appSettings.directoryTreeEnabled)
+        }
     }
 
     @ViewBuilder

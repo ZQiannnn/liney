@@ -55,6 +55,11 @@ final class WorkspaceModel: ObservableObject, Identifiable {
     /// Markdown/HTML file or a live web page served on the host. `nil` hides it.
     @Published var previewPanel: WorkspacePreviewContent?
 
+    /// Whether the file-tree default from app settings has been applied to this
+    /// workspace yet. Seeding happens once, the first time the workspace is
+    /// shown, so a later manual toggle is never overridden.
+    private var didSeedFileTreeVisibility = false
+
     /// Flipped to true by WorkspaceStore when this workspace becomes the
     /// selected one. Sessions are started lazily: at launch every workspace's
     /// sessionController is bootstrapped with idle panes, and only the active
@@ -569,6 +574,14 @@ final class WorkspaceModel: ObservableObject, Identifiable {
 
     func toggleFileTree() {
         isFileTreePresented.toggle()
+    }
+
+    /// Applies the app-settings file-tree default the first time this workspace
+    /// is shown. Idempotent and never overrides a manual toggle.
+    func applyDefaultFileTreeVisibilityIfNeeded(_ enabled: Bool) {
+        guard !didSeedFileTreeVisibility else { return }
+        didSeedFileTreeVisibility = true
+        isFileTreePresented = enabled
     }
 
     func updateSplitFraction(splitID: UUID, fraction: Double) {

@@ -362,6 +362,7 @@ struct AppSettings: Codable, Hashable {
     var keyboardShortcutOverrides: [String: KeyboardShortcutOverride]
     var logLevel: AppLogLevel
     var hooksEnabled: Bool
+    var directoryTreeEnabled: Bool
 
     init(
         appLanguage: AppLanguage = .automatic,
@@ -409,7 +410,8 @@ struct AppSettings: Codable, Hashable {
         sidebarRootOrder: [SidebarRootItem] = [],
         keyboardShortcutOverrides: [String: KeyboardShortcutOverride] = [:],
         logLevel: AppLogLevel = .off,
-        hooksEnabled: Bool = false
+        hooksEnabled: Bool = false,
+        directoryTreeEnabled: Bool = true
     ) {
         let normalizedKeyboardShortcutOverrides = LineyKeyboardShortcuts.normalizedOverrides(keyboardShortcutOverrides)
         let normalizedAgentPresets = lineyNormalizedAgentPresets(agentPresets)
@@ -482,6 +484,7 @@ struct AppSettings: Codable, Hashable {
         self.sidebarRootOrder = sidebarRootOrder
         self.logLevel = logLevel
         self.hooksEnabled = hooksEnabled
+        self.directoryTreeEnabled = directoryTreeEnabled
     }
 }
 
@@ -533,6 +536,7 @@ extension AppSettings {
         case keyboardShortcutOverrides
         case logLevel
         case hooksEnabled
+        case directoryTreeEnabled
     }
 
     init(from decoder: any Decoder) throws {
@@ -591,7 +595,8 @@ extension AppSettings {
             sidebarRootOrder: try container.decodeIfPresent([SidebarRootItem].self, forKey: .sidebarRootOrder) ?? [],
             keyboardShortcutOverrides: try container.decodeIfPresent([String: KeyboardShortcutOverride].self, forKey: .keyboardShortcutOverrides) ?? [:],
             logLevel: try container.decodeIfPresent(AppLogLevel.self, forKey: .logLevel) ?? .off,
-            hooksEnabled: try container.decodeIfPresent(Bool.self, forKey: .hooksEnabled) ?? false
+            hooksEnabled: try container.decodeIfPresent(Bool.self, forKey: .hooksEnabled) ?? false,
+            directoryTreeEnabled: try container.decodeIfPresent(Bool.self, forKey: .directoryTreeEnabled) ?? true
         )
     }
 }

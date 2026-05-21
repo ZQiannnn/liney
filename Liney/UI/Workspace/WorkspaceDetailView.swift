@@ -50,40 +50,47 @@ private struct WorkspaceSessionDetailView: View {
 
     var body: some View {
         HSplitView {
-            if workspace.isFileTreePresented {
-                WorkspaceFileTreeView(workspace: workspace, sessionController: workspace.sessionController)
-                    .frame(minWidth: 170, idealWidth: 250, maxWidth: 460)
-            }
-
             VStack(spacing: 8) {
                 if workspace.tabs.count > 1 {
                     WorkspaceTabBarView(workspace: workspace)
                 }
-                terminalArea
+                terminalContent
             }
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+
+            if showsRightColumn {
+                rightColumn
+                    .frame(minWidth: 280, idealWidth: 460, maxWidth: 1000, maxHeight: .infinity)
+            }
         }
         .onAppear {
             workspace.applyDefaultFileTreeVisibilityIfNeeded(store.appSettings.directoryTreeEnabled)
         }
     }
 
+    private var showsRightColumn: Bool {
+        workspace.isFileTreePresented || workspace.previewPanel != nil
+    }
+
+    /// The right-hand "workbench" column: the directory tree (top) and the
+    /// preview panel (bottom). Either can be present on its own; together they
+    /// share the column via a resizable vertical split.
     @ViewBuilder
-    private var terminalArea: some View {
-        if let preview = workspace.previewPanel {
-            HSplitView {
-                terminalContent
-                    .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+    private var rightColumn: some View {
+        VSplitView {
+            if workspace.isFileTreePresented {
+                WorkspaceFileTreeView(workspace: workspace, sessionController: workspace.sessionController)
+                    .frame(minHeight: 120, maxHeight: .infinity)
+            }
+            if let preview = workspace.previewPanel {
                 WorkspacePreviewPanel(
                     content: preview,
                     onNavigate: { workspace.openPreview($0) },
                     onClose: { workspace.closePreview() }
                 )
-                .frame(minWidth: 300, idealWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                 .id(previewPanelIdentity(preview))
+                .frame(minHeight: 200, maxHeight: .infinity)
             }
-        } else {
-            terminalContent
         }
     }
 

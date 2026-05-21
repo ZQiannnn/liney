@@ -1186,19 +1186,43 @@ private struct StatusBanner: View {
         }
     }
 
+    /// Hard cap so a runaway error message can't fill the screen, while still
+    /// showing the full text for anything reasonable.
+    private static let maxCharacters = 1000
+
+    private var displayText: String {
+        guard message.text.count > Self.maxCharacters else { return message.text }
+        return String(message.text.prefix(Self.maxCharacters)) + "…"
+    }
+
+    private var isMultiline: Bool {
+        message.text.contains("\n") || message.text.count > 80
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Circle()
                 .fill(tint)
                 .frame(width: 8, height: 8)
-            Text(message.text)
+                .padding(.top, 4)
+            Text(displayText)
                 .font(.system(size: 12, weight: .medium))
-                .lineLimit(2)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(LineyTheme.canvasBackground.opacity(0.96), in: Capsule())
-        .overlay(Capsule().stroke(LineyTheme.border, lineWidth: 1))
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(LineyTheme.canvasBackground.opacity(0.96), in: shape)
+        .overlay(shape.stroke(LineyTheme.border, lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+
+    private var shape: AnyShape {
+        isMultiline
+            ? AnyShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            : AnyShape(Capsule())
     }
 }

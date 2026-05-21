@@ -1,16 +1,24 @@
 # Workbench Panels: File Tree, Preview, and Web
 
-Liney can flank the terminal split tree with two optional panels. They are
-workspace-level UI that wrap the terminal area — the terminal/session/persistence
-core is untouched, so panels never participate in pane layout, zoom, or
-restoration.
+Liney groups file browsing and output viewing into a single optional **right-hand
+"workbench" column**, beside the terminal. The far-left workspace sidebar stays
+pure project/worktree navigation. The column is workspace-level UI that wraps the
+terminal area — the terminal/session/persistence core is untouched, so panels
+never participate in pane layout, zoom, or restoration.
 
-## Directory tree (left)
+The column hosts the directory tree (top) and the preview panel (bottom); either
+can appear on its own, and together they share the column via a resizable
+vertical split (`VSplitView`).
+
+## Directory tree (right, top)
 
 `WorkspaceFileTreeView` shows a lazy, recursive directory tree whose **root
 follows the focused pane's working directory**. Liney's shell integration already
 reports `cwd` via OSC 7 (`ShellSession.reportedWorkingDirectory`); the tree
-observes the focused session and re-roots whenever you `cd`.
+observes the focused session and re-roots whenever you `cd` — or click a
+different pane. Loading is driven by a `.task(id:)` keyed on the directory, so the
+root and any expanded folder populate on first appear (no manual refresh needed)
+and reload when the path, refresh button, or hidden-file toggle changes.
 
 - Shown by default; the **Settings → General → "Show the file tree by default"**
   toggle (`AppSettings.directoryTreeEnabled`, default on) controls the initial
@@ -23,7 +31,7 @@ observes the focused session and re-roots whenever you `cd`.
   focused terminal), reveal in Finder, open with default app, copy path.
 - Header buttons: toggle hidden files, refresh, hide.
 
-## Preview panel (right)
+## Preview panel (right, bottom)
 
 `WorkspacePreviewPanel` renders the workspace's current `WorkspacePreviewContent`
 in a single reused `WKWebView` (`PreviewWebEngine`):

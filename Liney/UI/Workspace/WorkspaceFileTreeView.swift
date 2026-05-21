@@ -8,9 +8,10 @@
 import AppKit
 import SwiftUI
 
-/// Left-hand directory tree column. Its root follows the focused terminal pane's
-/// current working directory, so a `cd` in the terminal automatically re-roots
-/// the tree. Clicking a Markdown or HTML file opens it in the preview panel.
+/// Directory tree column. Its root follows the focused terminal pane's current
+/// working directory, so a `cd` in the terminal — or clicking a different pane —
+/// automatically re-roots the tree. Clicking a Markdown or HTML file opens it in
+/// the preview panel.
 struct WorkspaceFileTreeView: View {
     @ObservedObject var workspace: WorkspaceModel
     @ObservedObject var sessionController: WorkspaceSessionController
@@ -36,6 +37,21 @@ private struct FileTreeFollowingSession: View {
     }
 }
 
+/// Identity for a directory load: re-runs the loading task whenever the path,
+/// manual refresh, or hidden-file toggle changes.
+private struct FileTreeLoadKey: Hashable {
+    let path: String
+    let token: UUID
+    let showsHidden: Bool
+}
+
+/// Off-main directory read shared by the root and each row.
+private func loadEntries(at url: URL, showsHidden: Bool) async -> [DirectoryTreeEntry] {
+    await Task.detached(priority: .userInitiated) {
+        DirectoryTreeLoader.entries(at: url, includesHidden: showsHidden)
+    }.value
+}
+
 private struct FileTreeContent: View {
     @EnvironmentObject private var store: WorkspaceStore
     @ObservedObject private var localization = LocalizationManager.shared
@@ -45,6 +61,8 @@ private struct FileTreeContent: View {
     @State private var selectedPath: String?
     @State private var showsHidden = false
     @State private var reloadToken = UUID()
+    @State private var rootEntries: [DirectoryTreeEntry] = []
+    @State private var isLoaded = false
 
     private func localized(_ key: String) -> String { localization.string(key) }
 
@@ -52,29 +70,52 @@ private struct FileTreeContent: View {
         URL(fileURLWithPath: rootPath, isDirectory: true)
     }
 
+    private var loadKey: FileTreeLoadKey {
+        FileTreeLoadKey(path: rootPath, token: reloadToken, showsHidden: showsHidden)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(LineyTheme.border)
 
-            if DirectoryTreeLoader.isReadableDirectory(rootPath) {
-                ScrollView {
+            ScrollView {
+                if !rootEntries.isEmpty {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        FileTreeDirectoryChildren(
-                            directoryURL: rootURL,
-                            depth: 0,
-                            showsHidden: showsHidden,
-                            selectedPath: $selectedPath,
-                            onOpen: open(entry:),
-                            onCommand: handle(command:for:),
-                            reloadToken: reloadToken
-                        )
+                        ForEach(rootEntries) { entry in
+                            FileTreeRow(
+                                entry: entry,
+                                depth: 0,
+                                showsHidden: showsHidden,
+                                reloadToken: reloadToken,
+                                selectedPath: $selectedPath,
+                                onOpen: open(entry:),
+                                onCommand: handle(command:for:)
+                            )
+                        }
                     }
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                } else if isLoaded {
+                    emptyMessage(localized("fileTree.empty"))
+                } else {
+                    emptyMessage(localized("fileTree.loading"))
                 }
-            } else {
-                emptyState
+            }
+            // Attaching the loader to the always-present ScrollView (not the
+            // ForEach) guarantees it runs on first appear and whenever the
+            // focused pane's directory, refresh, or hidden toggle changes.
+            .task(id: loadKey) {
+                isLoaded = false
+                guard DirectoryTreeLoader.isReadableDirectory(rootPath) else {
+                    rootEntries = []
+                    isLoaded = true
+                    return
+                }
+                let loaded = await loadEntries(at: rootURL, showsHidden: showsHidden)
+                guard !Task.isCancelled else { return }
+                rootEntries = loaded
+                isLoaded = true
             }
         }
         .background(LineyTheme.sidebarBackground)
@@ -129,18 +170,18 @@ private struct FileTreeContent: View {
         .help(help)
     }
 
-    private var emptyState: some View {
+    private func emptyMessage(_ text: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: "folder.badge.questionmark")
-                .font(.system(size: 22))
+            Image(systemName: "folder")
+                .font(.system(size: 20))
                 .foregroundStyle(LineyTheme.mutedText)
-            Text(localized("fileTree.unavailable"))
+            Text(text)
                 .font(.system(size: 12))
                 .foregroundStyle(LineyTheme.mutedText)
                 .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(16)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 32)
     }
 
     // MARK: - Actions
@@ -190,83 +231,52 @@ enum FileTreeCommand {
     case changeDirectory
 }
 
-/// Lazily lists and renders the children of one directory.
-private struct FileTreeDirectoryChildren: View {
-    let directoryURL: URL
-    let depth: Int
-    let showsHidden: Bool
-    @Binding var selectedPath: String?
-    let onOpen: (DirectoryTreeEntry) -> Void
-    let onCommand: (FileTreeCommand, DirectoryTreeEntry) -> Void
-    let reloadToken: UUID
-
-    @State private var entries: [DirectoryTreeEntry] = []
-    @State private var didLoad = false
-
-    var body: some View {
-        ForEach(entries) { entry in
-            FileTreeRow(
-                entry: entry,
-                depth: depth,
-                showsHidden: showsHidden,
-                selectedPath: $selectedPath,
-                onOpen: onOpen,
-                onCommand: onCommand,
-                reloadToken: reloadToken
-            )
-        }
-        .onAppear(perform: loadIfNeeded)
-        .onChange(of: reloadToken) { _, _ in reload() }
-        .onChange(of: showsHidden) { _, _ in reload() }
-    }
-
-    private func loadIfNeeded() {
-        guard !didLoad else { return }
-        didLoad = true
-        reload()
-    }
-
-    private func reload() {
-        let url = directoryURL
-        let hidden = showsHidden
-        Task.detached(priority: .userInitiated) {
-            let loaded = DirectoryTreeLoader.entries(at: url, includesHidden: hidden)
-            await MainActor.run { entries = loaded }
-        }
-    }
-}
-
 private struct FileTreeRow: View {
     @ObservedObject private var localization = LocalizationManager.shared
     let entry: DirectoryTreeEntry
     let depth: Int
     let showsHidden: Bool
+    let reloadToken: UUID
     @Binding var selectedPath: String?
     let onOpen: (DirectoryTreeEntry) -> Void
     let onCommand: (FileTreeCommand, DirectoryTreeEntry) -> Void
-    let reloadToken: UUID
 
     @State private var isExpanded = false
     @State private var isHovered = false
+    @State private var children: [DirectoryTreeEntry] = []
 
     private func localized(_ key: String) -> String { localization.string(key) }
 
     private var isSelected: Bool { selectedPath == entry.url.path }
 
+    private var childLoadKey: FileTreeLoadKey {
+        FileTreeLoadKey(path: isExpanded ? entry.url.path : "", token: reloadToken, showsHidden: showsHidden)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             row
             if entry.isDirectory, isExpanded {
-                FileTreeDirectoryChildren(
-                    directoryURL: entry.url,
-                    depth: depth + 1,
-                    showsHidden: showsHidden,
-                    selectedPath: $selectedPath,
-                    onOpen: onOpen,
-                    onCommand: onCommand,
-                    reloadToken: reloadToken
-                )
+                ForEach(children) { child in
+                    FileTreeRow(
+                        entry: child,
+                        depth: depth + 1,
+                        showsHidden: showsHidden,
+                        reloadToken: reloadToken,
+                        selectedPath: $selectedPath,
+                        onOpen: onOpen,
+                        onCommand: onCommand
+                    )
+                }
             }
+        }
+        // Loads children when the row is expanded; re-runs on refresh / hidden
+        // toggle. Attached to the always-present VStack so it fires reliably.
+        .task(id: childLoadKey) {
+            guard entry.isDirectory, isExpanded else { return }
+            let loaded = await loadEntries(at: entry.url, showsHidden: showsHidden)
+            guard !Task.isCancelled else { return }
+            children = loaded
         }
     }
 

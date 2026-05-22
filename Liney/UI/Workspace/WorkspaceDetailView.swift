@@ -57,10 +57,11 @@ private struct WorkspaceSessionDetailView: View {
                 terminalContent
             }
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
 
             if showsRightColumn {
                 rightColumn
-                    .frame(minWidth: 280, idealWidth: 460, maxWidth: 1000, maxHeight: .infinity)
+                    .frame(minWidth: 240, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
             }
         }
         .onAppear {

@@ -411,7 +411,7 @@ struct AppSettings: Codable, Hashable {
         keyboardShortcutOverrides: [String: KeyboardShortcutOverride] = [:],
         logLevel: AppLogLevel = .off,
         hooksEnabled: Bool = false,
-        directoryTreeEnabled: Bool = true
+        directoryTreeEnabled: Bool = false
     ) {
         let normalizedKeyboardShortcutOverrides = LineyKeyboardShortcuts.normalizedOverrides(keyboardShortcutOverrides)
         let normalizedAgentPresets = lineyNormalizedAgentPresets(agentPresets)
@@ -596,7 +596,7 @@ extension AppSettings {
             keyboardShortcutOverrides: try container.decodeIfPresent([String: KeyboardShortcutOverride].self, forKey: .keyboardShortcutOverrides) ?? [:],
             logLevel: try container.decodeIfPresent(AppLogLevel.self, forKey: .logLevel) ?? .off,
             hooksEnabled: try container.decodeIfPresent(Bool.self, forKey: .hooksEnabled) ?? false,
-            directoryTreeEnabled: try container.decodeIfPresent(Bool.self, forKey: .directoryTreeEnabled) ?? true
+            directoryTreeEnabled: try container.decodeIfPresent(Bool.self, forKey: .directoryTreeEnabled) ?? false
         )
     }
 }

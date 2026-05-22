@@ -950,7 +950,9 @@ final class WorkspaceStore: ObservableObject {
             workspaceGroups: settings.workspaceGroups,
             sidebarRootOrder: settings.sidebarRootOrder,
             keyboardShortcutOverrides: settings.keyboardShortcutOverrides,
-            logLevel: settings.logLevel
+            logLevel: settings.logLevel,
+            hooksEnabled: settings.hooksEnabled,
+            directoryTreeEnabled: settings.directoryTreeEnabled
         )
         LocalizationManager.shared.updateSelectedLanguage(appSettings.appLanguage)
         let validAgentPresetIDs = Set(appSettings.agentPresets.map(\.id))

@@ -651,6 +651,7 @@ struct SettingsSheet: View {
                     Toggle(localized("settings.general.behavior.allowSystemNotifications"), isOn: $appSettings.systemNotificationsEnabled)
                     Toggle(localized("settings.general.behavior.showArchivedWorkspaces"), isOn: $appSettings.showArchivedWorkspaces)
                     Toggle(localized("settings.general.behavior.showHAPIToolbarButton"), isOn: $appSettings.showHAPIToolbarButton)
+                    Toggle(localized("settings.general.behavior.directoryTreeEnabled"), isOn: $appSettings.directoryTreeEnabled)
 
                     Divider()
 

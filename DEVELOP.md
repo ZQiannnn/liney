@@ -62,6 +62,7 @@ Liney/
 
 - Testing guide: [`docs/testing.md`](./docs/testing.md)
 - Terminal architecture: [`docs/terminal-architecture.md`](./docs/terminal-architecture.md)
+- Workbench panels (file tree / preview / web): [`docs/workbench-panels.md`](./docs/workbench-panels.md)
 - Ghostty vendor rebuild: [`docs/build_ghostty.md`](./docs/build_ghostty.md)
 - Feature backlog: [`docs/feature-backlog.md`](./docs/feature-backlog.md)
 - Release process: [`RELEASING.md`](./RELEASING.md)

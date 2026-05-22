@@ -30,6 +30,11 @@
 	<string>DJPIksMP6FvVtjZk9WN9lzZRcd9el01eqFzcafpehlQ=</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Liney needs microphone access for voice input in the terminal.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

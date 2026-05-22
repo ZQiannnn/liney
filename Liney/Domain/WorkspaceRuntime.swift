@@ -47,6 +47,19 @@ final class WorkspaceModel: ObservableObject, Identifiable {
 
     private var listeningPortRefreshTask: Task<Void, Never>?
 
+    /// Whether the left-hand directory tree column is shown. The tree follows
+    /// the focused pane's working directory. Ephemeral per session.
+    @Published var isFileTreePresented: Bool = false
+
+    /// What the right-hand preview panel is showing, if anything: a rendered
+    /// Markdown/HTML file or a live web page served on the host. `nil` hides it.
+    @Published var previewPanel: WorkspacePreviewContent?
+
+    /// Whether the file-tree default from app settings has been applied to this
+    /// workspace yet. Seeding happens once, the first time the workspace is
+    /// shown, so a later manual toggle is never overridden.
+    private var didSeedFileTreeVisibility = false
+
     /// Flipped to true by WorkspaceStore when this workspace becomes the
     /// selected one. Sessions are started lazily: at launch every workspace's
     /// sessionController is bootstrapped with idle panes, and only the active
@@ -530,6 +543,45 @@ final class WorkspaceModel: ObservableObject, Identifiable {
     func focusPane(_ paneID: UUID) {
         sessionController.focus(paneID)
         saveActiveWorktreeState()
+    }
+
+    // MARK: - Preview panel & file tree
+
+    /// Working directory the file tree and "open in preview" actions resolve
+    /// against — the focused pane's reported cwd, or the active worktree path.
+    var focusedWorkingDirectory: String {
+        if let paneID = sessionController.focusedPaneID,
+           let session = sessionController.session(for: paneID) {
+            return session.effectiveWorkingDirectory
+        }
+        return activeWorktreePath
+    }
+
+    /// Shows `content` in the right-hand preview panel.
+    func openPreview(_ content: WorkspacePreviewContent) {
+        previewPanel = content
+    }
+
+    /// Opens a localhost web page for a detected listening port.
+    func openPreviewForPort(_ port: Int) {
+        guard let url = WorkspacePreviewContent.localhostURL(port: port) else { return }
+        previewPanel = .web(url)
+    }
+
+    func closePreview() {
+        previewPanel = nil
+    }
+
+    func toggleFileTree() {
+        isFileTreePresented.toggle()
+    }
+
+    /// Applies the app-settings file-tree default the first time this workspace
+    /// is shown. Idempotent and never overrides a manual toggle.
+    func applyDefaultFileTreeVisibilityIfNeeded(_ enabled: Bool) {
+        guard !didSeedFileTreeVisibility else { return }
+        didSeedFileTreeVisibility = true
+        isFileTreePresented = enabled
     }
 
     func updateSplitFraction(splitID: UUID, fraction: Double) {

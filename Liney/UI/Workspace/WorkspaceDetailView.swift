@@ -49,29 +49,76 @@ private struct WorkspaceSessionDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if workspace.tabs.count > 1 {
-                WorkspaceTabBarView(workspace: workspace)
-            }
-
-            Group {
-                if let layout = workspace.layout {
-                    SplitNodeView(workspace: workspace, sessionController: workspace.sessionController, node: layout)
-                } else {
-                    VStack(spacing: 14) {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(LineyTheme.mutedText)
-                        Text(localized("main.workspace.noTerminalOpen"))
-                            .font(.system(size: 14, weight: .semibold))
-                        Button(localized("main.workspace.newSession")) {
-                            store.createSession(in: workspace)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        HSplitView {
+            VStack(spacing: 8) {
+                if workspace.tabs.count > 1 {
+                    WorkspaceTabBarView(workspace: workspace)
                 }
+                terminalContent
             }
+            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+
+            if showsRightColumn {
+                rightColumn
+                    .frame(minWidth: 240, idealWidth: 320, maxWidth: 480, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            workspace.applyDefaultFileTreeVisibilityIfNeeded(store.appSettings.directoryTreeEnabled)
+        }
+    }
+
+    private var showsRightColumn: Bool {
+        workspace.isFileTreePresented || workspace.previewPanel != nil
+    }
+
+    /// The right-hand "workbench" column: the directory tree (top) and the
+    /// preview panel (bottom). Either can be present on its own; together they
+    /// share the column via a resizable vertical split.
+    @ViewBuilder
+    private var rightColumn: some View {
+        VSplitView {
+            if workspace.isFileTreePresented {
+                WorkspaceFileTreeView(workspace: workspace, sessionController: workspace.sessionController)
+                    .frame(minHeight: 120, maxHeight: .infinity)
+            }
+            if let preview = workspace.previewPanel {
+                WorkspacePreviewPanel(
+                    content: preview,
+                    onNavigate: { workspace.openPreview($0) },
+                    onClose: { workspace.closePreview() }
+                )
+                .id(previewPanelIdentity(preview))
+                .frame(minHeight: 200, maxHeight: .infinity)
+            }
+        }
+    }
+
+    /// Recreate the panel only when switching between file and web modes (so a
+    /// live web session is preserved while navigating, and file→file swaps reuse
+    /// the same web view).
+    private func previewPanelIdentity(_ content: WorkspacePreviewContent) -> String {
+        content.isWeb ? "web" : "file"
+    }
+
+    @ViewBuilder
+    private var terminalContent: some View {
+        if let layout = workspace.layout {
+            SplitNodeView(workspace: workspace, sessionController: workspace.sessionController, node: layout)
+        } else {
+            VStack(spacing: 14) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(LineyTheme.mutedText)
+                Text(localized("main.workspace.noTerminalOpen"))
+                    .font(.system(size: 14, weight: .semibold))
+                Button(localized("main.workspace.newSession")) {
+                    store.createSession(in: workspace)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

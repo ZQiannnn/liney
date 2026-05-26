@@ -79,7 +79,8 @@ final class GitSourceControlViewModel: ObservableObject {
 
     /// Latest live instance — read from `closeFocusedPaneOrTab` so Cmd+W can
     /// dismiss the center overlay before the global Close-Tab handler runs.
-    nonisolated(unsafe) static weak var currentInstance: GitSourceControlViewModel?
+    /// MainActor-isolated alongside the class; all readers are also MainActor.
+    static weak var currentInstance: GitSourceControlViewModel?
 
     let historyState = HistoryWindowState()
     private let svc = GitSourceControlService()

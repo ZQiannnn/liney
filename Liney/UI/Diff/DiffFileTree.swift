@@ -15,13 +15,31 @@ struct PathTreeNode<Item>: Identifiable {
     var isLeaf: Bool { item != nil }
 }
 
+/// Intermediate builder node. Non-generic on purpose: a generic class holding a
+/// dictionary of itself triggers a SIL optimizer crash (EarlyPerfInliner) in
+/// the Release x86_64 cross-compile path on Xcode 26. Type-erase `Item` to
+/// `Any` here, then cast back at snapshot time.
+private final class PathTreeBuilderNode {
+    let name: String
+    let path: String
+    var item: Any?
+    var leafID: String?
+    var childrenByName: [String: PathTreeBuilderNode] = [:]
+    var orderedChildNames: [String] = []
+
+    init(name: String, path: String) {
+        self.name = name
+        self.path = path
+    }
+}
+
 enum PathTree {
     static func build<Item>(
         items: [Item],
         path: (Item) -> String,
         leafID: (Item) -> String
     ) -> [PathTreeNode<Item>] {
-        let root = MutableNode<Item>(name: "", path: "")
+        let root = PathTreeBuilderNode(name: "", path: "")
         for item in items {
             let segments = path(item)
                 .split(separator: "/", omittingEmptySubsequences: true)
@@ -32,11 +50,11 @@ enum PathTree {
             var accumulated = ""
             for (index, segment) in segments.enumerated() {
                 accumulated = accumulated.isEmpty ? segment : accumulated + "/" + segment
-                let next: MutableNode<Item>
+                let next: PathTreeBuilderNode
                 if let existing = current.childrenByName[segment] {
                     next = existing
                 } else {
-                    next = MutableNode<Item>(name: segment, path: accumulated)
+                    next = PathTreeBuilderNode(name: segment, path: accumulated)
                     current.childrenByName[segment] = next
                     current.orderedChildNames.append(segment)
                 }
@@ -47,13 +65,13 @@ enum PathTree {
                 current = next
             }
         }
-        return snapshot(root).children
+        return snapshot(root, as: Item.self).children
     }
 
-    private static func snapshot<Item>(_ node: MutableNode<Item>) -> PathTreeNode<Item> {
+    private static func snapshot<Item>(_ node: PathTreeBuilderNode, as: Item.Type) -> PathTreeNode<Item> {
         let kids = node.orderedChildNames
             .compactMap { node.childrenByName[$0] }
-            .map(snapshot)
+            .map { snapshot($0, as: Item.self) }
             .sorted { lhs, rhs in
                 if lhs.isLeaf != rhs.isLeaf { return !lhs.isLeaf }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
@@ -69,7 +87,7 @@ enum PathTree {
             id: id,
             name: node.name,
             path: node.path,
-            item: node.item,
+            item: node.item as? Item,
             children: kids
         )
     }
@@ -77,19 +95,5 @@ enum PathTree {
     static func leafCount<Item>(in node: PathTreeNode<Item>) -> Int {
         if node.isLeaf { return 1 }
         return node.children.reduce(0) { $0 + leafCount(in: $1) }
-    }
-
-    private final class MutableNode<Item> {
-        let name: String
-        let path: String
-        var item: Item?
-        var leafID: String?
-        var childrenByName: [String: MutableNode<Item>] = [:]
-        var orderedChildNames: [String] = []
-
-        init(name: String, path: String) {
-            self.name = name
-            self.path = path
-        }
     }
 }

@@ -14,12 +14,14 @@ enum SourceControlTab: Hashable {
     case changes
     case history
     case commitDetail(hash: String, shortHash: String, subject: String)
+    case compare(base: String, head: String)
 
     var title: String {
         switch self {
         case .changes: return "Changes"
         case .history: return "History"
         case .commitDetail(_, let s, _): return s
+        case .compare(let b, let h): return "\(b)…\(h)"
         }
     }
     var icon: String {
@@ -27,6 +29,7 @@ enum SourceControlTab: Hashable {
         case .changes: return "list.bullet.indent"
         case .history: return "clock.arrow.circlepath"
         case .commitDetail: return "scroll"
+        case .compare: return "arrow.left.arrow.right"
         }
     }
     var isClosable: Bool {
@@ -59,6 +62,9 @@ final class GitSourceControlViewModel: ObservableObject {
     @Published var commitFiles: [String: [DiffChangedFile]] = [:]
     /// Selected file per commit-detail tab.
     @Published var commitSelectedFile: [String: String] = [:]
+    /// Cache of compare-tab file lists keyed by "base\0head".
+    @Published var compareFiles: [String: [DiffChangedFile]] = [:]
+    @Published var compareSelectedFile: [String: String] = [:]
 
     // Center pane diff (replaces terminal when active)
     @Published var centerDoc: DiffFileDocument?
@@ -85,6 +91,8 @@ final class GitSourceControlViewModel: ObservableObject {
         self.selectedHistoryCommitID = nil
         commitFiles = [:]
         commitSelectedFile = [:]
+        compareFiles = [:]
+        compareSelectedFile = [:]
         centerDoc = nil
         centerSubject = nil
         openTabs = openTabs.filter { !$0.isClosable }
@@ -123,6 +131,13 @@ final class GitSourceControlViewModel: ObservableObject {
 
     // MARK: Tabs
 
+    func openCompareTab(base: String, head: String = "HEAD") {
+        let tab = SourceControlTab.compare(base: base, head: head)
+        if !openTabs.contains(tab) { openTabs.append(tab) }
+        activeTab = tab
+        loadCompareFilesIfNeeded(base: base, head: head)
+    }
+
     func openCommitTab(_ commit: GitHistoryCommit) {
         let tab = SourceControlTab.commitDetail(hash: commit.hash, shortHash: commit.shortHash, subject: commit.subject)
         if !openTabs.contains(tab) { openTabs.append(tab) }
@@ -138,6 +153,42 @@ final class GitSourceControlViewModel: ObservableObject {
     }
 
     // MARK: Loaders
+
+    func loadCompareFilesIfNeeded(base: String, head: String) {
+        let key = base + "\u{0000}" + head
+        guard let cwd = worktreePath, compareFiles[key] == nil else { return }
+        Task { @MainActor in
+            do {
+                let raw = try await self.repoSvc.diffNameStatusBetweenCommits(
+                    for: cwd, fromCommit: base, toCommit: head
+                )
+                self.compareFiles[key] = DiffChangedFile.parseNameStatus(raw)
+            } catch {
+                self.compareFiles[key] = []
+                self.errorMessage = "Compare failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Show one file diff between two refs in the center pane.
+    func showCenterDiff(compareBase base: String, head: String, file: DiffChangedFile) {
+        guard let cwd = worktreePath else { return }
+        let path = file.newPath ?? file.oldPath ?? ""
+        centerSubject = "\(base) … \(head) · \(path)"
+        centerDocLoading = true
+        centerDoc = nil
+        Task { @MainActor in
+            do {
+                let patch = try await self.repoSvc.diffPatchBetweenCommits(
+                    for: cwd, filePath: path, fromCommit: base, toCommit: head
+                )
+                self.centerDoc = DiffFileDocument(file: file, unifiedPatch: patch)
+            } catch {
+                self.centerDoc = DiffFileDocument(file: file, unifiedPatch: "Error: \(error.localizedDescription)")
+            }
+            self.centerDocLoading = false
+        }
+    }
 
     func loadCommitFilesIfNeeded(_ hash: String) {
         guard let cwd = worktreePath, commitFiles[hash] == nil else { return }
@@ -299,7 +350,7 @@ struct GitSourceControlPanel: View {
                 if vm.branches.isEmpty {
                     Text("No branches")
                 } else {
-                    Section("Local") {
+                    Section("Checkout — Local") {
                         ForEach(vm.branches.filter { !$0.isRemote }) { b in
                             Button {
                                 Task { await vm.checkout(b.name) }
@@ -311,9 +362,22 @@ struct GitSourceControlPanel: View {
                             }
                         }
                     }
-                    Section("Remote") {
+                    Section("Checkout — Remote") {
                         ForEach(vm.branches.filter { $0.isRemote }) { b in
                             Button(b.name) { Task { await vm.checkout(b.name) } }
+                        }
+                    }
+                    Divider()
+                    Menu("Compare current branch with…") {
+                        Section("Local") {
+                            ForEach(vm.branches.filter { !$0.isRemote && !$0.isCurrent }) { b in
+                                Button(b.name) { vm.openCompareTab(base: b.name) }
+                            }
+                        }
+                        Section("Remote") {
+                            ForEach(vm.branches.filter { $0.isRemote }) { b in
+                                Button(b.name) { vm.openCompareTab(base: b.name) }
+                            }
                         }
                     }
                 }
@@ -416,6 +480,8 @@ struct GitSourceControlPanel: View {
             HistoryTabContent(vm: vm)
         case .commitDetail(let hash, _, _):
             CommitDetailTabContent(commitHash: hash, vm: vm)
+        case .compare(let base, let head):
+            CompareTabContent(base: base, head: head, vm: vm)
         }
     }
 }
@@ -689,6 +755,56 @@ private struct CommitFileRow: View {
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Compare tab content
+
+private struct CompareTabContent: View {
+    let base: String
+    let head: String
+    @ObservedObject var vm: GitSourceControlViewModel
+
+    private var key: String { base + "\u{0000}" + head }
+    private var files: [DiffChangedFile] { vm.compareFiles[key] ?? [] }
+    private var selectedFile: String? { vm.compareSelectedFile[key] }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                HStack {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.left.arrow.right").font(.system(size: 10))
+                        Text(base).font(.system(size: 10, weight: .medium))
+                        Text("→").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(head).font(.system(size: 10, weight: .medium))
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Color.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                    Spacer()
+                    Text("\(files.count) files")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+
+                if files.isEmpty && vm.compareFiles[key] == nil {
+                    HStack { ProgressView().controlSize(.small); Spacer() }
+                        .padding(10)
+                } else if files.isEmpty {
+                    Text("No differences between \(base) and \(head).")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
+                } else {
+                    ForEach(files) { file in
+                        CommitFileRow(file: file, isSelected: selectedFile == file.id)
+                            .onTapGesture {
+                                vm.compareSelectedFile[key] = file.id
+                                vm.showCenterDiff(compareBase: base, head: head, file: file)
+                            }
+                    }
+                }
+            }
+        }
+        .onAppear { vm.loadCompareFilesIfNeeded(base: base, head: head) }
     }
 }
 

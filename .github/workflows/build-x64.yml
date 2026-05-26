@@ -20,11 +20,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Select Xcode 16
+      - name: Select Xcode (prefer 16.0–16.2, fall back to latest 16)
         run: |
           set -euo pipefail
-          XCODE_APP=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -n 1)
+          ls /Applications/ | grep -i Xcode || true
+          XCODE_APP=""
+          for v in 16.0 16.1 16.2; do
+            CAND=$(ls -d /Applications/Xcode_${v}*.app 2>/dev/null | head -n 1)
+            if [[ -n "$CAND" ]]; then XCODE_APP="$CAND"; break; fi
+          done
+          if [[ -z "$XCODE_APP" ]]; then
+            XCODE_APP=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | head -n 1)
+          fi
           [[ -z "$XCODE_APP" ]] && XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          echo "Using $XCODE_APP"
           echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
           xcodebuild -version
           swift --version
@@ -39,14 +48,18 @@ jobs:
           lipo -info "$LIB"
           lipo -info "$LIB" | grep -q "x86_64" || { echo "No x86_64 slice in GhosttyKit"; exit 1; }
 
-      - name: Patch build script to disable strict actor isolation
-        # The project pins SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor which is
-        # warnings-only on Xcode 16.0 but errors on Xcode 16.4. Override to
-        # the language default for this build.
+      - name: Strip strict-concurrency settings from project
+        # SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor + SWIFT_APPROACHABLE_CONCURRENCY=YES
+        # only work on Xcode 16.0; Xcode 16.4 turns those warnings into errors.
+        # Remove the lines from project.pbxproj entirely.
         run: |
           set -euo pipefail
-          sed -i '' 's|ONLY_ACTIVE_ARCH=NO|ONLY_ACTIVE_ARCH=NO SWIFT_DEFAULT_ACTOR_ISOLATION="" SWIFT_APPROACHABLE_CONCURRENCY=NO|' scripts/build_macos_app.sh
-          grep -A2 "ONLY_ACTIVE_ARCH" scripts/build_macos_app.sh | head -5
+          PBX=Liney.xcodeproj/project.pbxproj
+          grep -c "SWIFT_DEFAULT_ACTOR_ISOLATION" "$PBX" || true
+          sed -i '' '/SWIFT_DEFAULT_ACTOR_ISOLATION/d' "$PBX"
+          sed -i '' '/SWIFT_APPROACHABLE_CONCURRENCY/d' "$PBX"
+          echo "After strip:"
+          grep -E "SWIFT_DEFAULT_ACTOR_ISOLATION|SWIFT_APPROACHABLE_CONCURRENCY" "$PBX" || echo "(removed)"
 
       - name: Build Liney for x86_64 only
         env:

@@ -22,14 +22,13 @@ final class GitSourceControlViewModel: ObservableObject {
     @Published var fileStats: [String: (Int, Int)] = [:]
     @Published var refsMap: [String: [String]] = [:]
     @Published var selectedPath: String?
-    @Published var selectedPatch: String = ""
+    @Published var selectedHistoryCommitID: String?
 
     @Published var changesExpanded: Bool = true
     @Published var historyExpanded: Bool = true
 
     let historyState = HistoryWindowState()
     private let svc = GitSourceControlService()
-    private var patchTask: Task<Void, Never>?
 
     var uniqueChanges: [GitStatusEntry] {
         var seenPath = Set<String>()
@@ -46,7 +45,7 @@ final class GitSourceControlViewModel: ObservableObject {
         self.worktreePath = worktreePath
         self.currentBranch = branchName
         self.selectedPath = nil
-        self.selectedPatch = ""
+        self.selectedHistoryCommitID = nil
         historyState.load(
             worktreePath: worktreePath,
             branchName: branchName,
@@ -78,32 +77,73 @@ final class GitSourceControlViewModel: ObservableObject {
             self.currentBranch = (try? await cur) ?? self.currentBranch
             self.fileStats = (try? await ns) ?? [:]
             self.refsMap = (try? await rm) ?? [:]
-            if let p = selectedPath { await loadPatch(p) }
         } catch {
             self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
-    func select(_ path: String?) {
+    /// Open the standalone Diff window (auto-tabbed via macOS window grouping)
+    /// with the given file pre-selected.
+    func openDiffWindow(selecting path: String?) {
         selectedPath = path
-        selectedPatch = ""
-        patchTask?.cancel()
-        if let p = path {
-            patchTask = Task { await loadPatch(p) }
+        DiffWindowManager.shared.show(
+            worktreePath: worktreePath,
+            branchName: currentBranch,
+            emptyStateMessage: "Working directory is clean."
+        )
+        if let path {
+            // Wait briefly for the file list to load, then select.
+            Task { @MainActor in
+                for _ in 0..<20 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if DiffWindowManager.shared.state.changedFiles.contains(where: { $0.id == path }) {
+                        DiffWindowManager.shared.state.selectedFileID = path
+                        DiffWindowManager.shared.state.updateDocumentSelection(for: path)
+                        return
+                    }
+                }
+            }
         }
     }
 
-    private func loadPatch(_ path: String) async {
-        guard let cwd = worktreePath else { return }
-        do {
-            let patch = try await svc.diffPatch(for: path, in: cwd)
-            await MainActor.run {
-                if self.selectedPath == path { self.selectedPatch = patch }
-            }
-        } catch {
-            await MainActor.run {
-                if self.selectedPath == path {
-                    self.selectedPatch = "Error: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+    /// Select a commit inline (loads its file list via historyState).
+    func selectHistoryCommit(_ id: String?) {
+        if selectedHistoryCommitID == id {
+            selectedHistoryCommitID = nil
+            historyState.selectedCommitID = nil
+            historyState.updateCommitSelection(for: nil)
+            return
+        }
+        selectedHistoryCommitID = id
+        historyState.selectedCommitID = id
+        historyState.updateCommitSelection(for: id)
+    }
+
+    /// Open the standalone History window pre-positioned to the commit/file.
+    func openHistoryWindow(commit: String?, file: String?) {
+        HistoryWindowManager.shared.show(
+            worktreePath: worktreePath,
+            branchName: currentBranch,
+            emptyStateMessage: "No commit history."
+        )
+        guard let commit else { return }
+        Task { @MainActor in
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                if HistoryWindowManager.shared.state.commits.contains(where: { $0.id == commit }) {
+                    HistoryWindowManager.shared.state.selectedCommitID = commit
+                    HistoryWindowManager.shared.state.updateCommitSelection(for: commit)
+                    if let file {
+                        for _ in 0..<20 {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            if HistoryWindowManager.shared.state.changedFiles.contains(where: { $0.id == file }) {
+                                HistoryWindowManager.shared.state.selectedFileID = file
+                                HistoryWindowManager.shared.state.updateDocumentSelection(for: file)
+                                return
+                            }
+                        }
+                    }
+                    return
                 }
             }
         }
@@ -346,11 +386,6 @@ struct GitSourceControlPanel: View {
                         ChangeRow(entry: entry, vm: vm, isSelected: vm.selectedPath == entry.path)
                     }
                 }
-                if let sel = vm.selectedPath, !vm.selectedPatch.isEmpty {
-                    Divider()
-                    DiffInlineView(path: sel, patch: vm.selectedPatch)
-                        .frame(minHeight: 200, maxHeight: 400)
-                }
             }
         }
     }
@@ -374,7 +409,18 @@ struct GitSourceControlPanel: View {
             if vm.historyExpanded {
                 LazyVStack(spacing: 0) {
                     ForEach(vm.historyState.commits.prefix(80), id: \.id) { commit in
-                        CommitRow(commit: commit, refs: vm.refsMap[commit.hash] ?? [])
+                        VStack(spacing: 0) {
+                            CommitRow(
+                                commit: commit,
+                                refs: vm.refsMap[commit.hash] ?? [],
+                                isSelected: vm.selectedHistoryCommitID == commit.id
+                            )
+                            .onTapGesture { vm.selectHistoryCommit(commit.id) }
+                            if vm.selectedHistoryCommitID == commit.id {
+                                CommitFileListView(vm: vm)
+                                    .background(LineyTheme.chromeBackground.opacity(0.35))
+                            }
+                        }
                     }
                     if vm.historyState.commits.isEmpty && vm.historyState.isLoadingCommits {
                         ProgressView().padding(8).controlSize(.small)
@@ -469,7 +515,7 @@ private struct ChangeRow: View {
         .background(isSelected ? Color.accentColor.opacity(0.18) : (hovering ? Color.gray.opacity(0.10) : Color.clear))
         .onHover { hovering = $0 }
         .onTapGesture {
-            vm.select(isSelected ? nil : entry.path)
+            vm.openDiffWindow(selecting: entry.path)
         }
     }
 
@@ -485,45 +531,46 @@ private struct ChangeRow: View {
     }
 }
 
-// MARK: Inline diff view (raw patch)
+// MARK: Inline file list for a selected history commit
 
-private struct DiffInlineView: View {
-    let path: String
-    let patch: String
+private struct CommitFileListView: View {
+    @ObservedObject var vm: GitSourceControlViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(LineyTheme.chromeBackground.opacity(0.6))
-            ScrollView([.horizontal, .vertical]) {
-                Text(attributed)
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            if vm.historyState.isLoadingFiles {
+                HStack { ProgressView().controlSize(.small); Spacer() }
+                    .padding(.horizontal, 22).padding(.vertical, 4)
+            } else if vm.historyState.changedFiles.isEmpty {
+                Text("No file changes in this commit.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 22).padding(.vertical, 4)
+            } else {
+                ForEach(vm.historyState.changedFiles) { file in
+                    HStack(spacing: 6) {
+                        Text(file.statusSymbol)
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(diffStatusColor(file.status))
+                            .frame(width: 12)
+                        Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(file.displayName)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                    }
+                    .padding(.leading, 22)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        vm.openHistoryWindow(commit: vm.selectedHistoryCommitID, file: file.id)
+                    }
+                    .background(Color.clear)
+                }
             }
         }
-    }
-
-    private var attributed: AttributedString {
-        var result = AttributedString()
-        for raw in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            var seg = AttributedString(line + "\n")
-            if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("@@") || line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("# ") {
-                seg.foregroundColor = .secondary
-            } else if line.hasPrefix("+") {
-                seg.foregroundColor = .green
-            } else if line.hasPrefix("-") {
-                seg.foregroundColor = .red
-            }
-            result.append(seg)
-        }
-        return result
     }
 }
 
@@ -532,6 +579,7 @@ private struct DiffInlineView: View {
 private struct CommitRow: View {
     let commit: GitHistoryCommit
     let refs: [String]
+    let isSelected: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -559,6 +607,19 @@ private struct CommitRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .contentShape(Rectangle())
+    }
+}
+
+private func diffStatusColor(_ s: DiffFileStatus) -> Color {
+    switch s {
+    case .modified: return .yellow
+    case .added: return .green
+    case .deleted: return .red
+    case .renamed: return .blue
+    case .copied: return .blue
+    case .unknown: return .secondary
     }
 }
 

@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct WorkspaceDetailView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @ObservedObject private var localization = LocalizationManager.shared
+    @ObservedObject var scVM: GitSourceControlViewModel
 
     private func localized(_ key: String) -> String {
         localization.string(key)
@@ -23,7 +24,7 @@ struct WorkspaceDetailView: View {
 
             Group {
                 if let workspace = store.selectedWorkspace {
-                    WorkspaceSessionDetailView(workspace: workspace)
+                    WorkspaceSessionDetailView(workspace: workspace, scVM: scVM)
                 } else {
                     ContentUnavailableView(
                         localized("main.workspace.openWorkspace"),
@@ -43,18 +44,23 @@ private struct WorkspaceSessionDetailView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @ObservedObject private var localization = LocalizationManager.shared
     @ObservedObject var workspace: WorkspaceModel
+    @ObservedObject var scVM: GitSourceControlViewModel
 
     private func localized(_ key: String) -> String {
         localization.string(key)
     }
 
+    private var hasCenterOverlay: Bool {
+        scVM.activeEditorURL != nil || scVM.centerDoc != nil || scVM.centerDocLoading
+    }
+
     var body: some View {
         HSplitView {
             VStack(spacing: 8) {
-                if workspace.tabs.count > 1 {
+                if workspace.tabs.count > 1, !hasCenterOverlay {
                     WorkspaceTabBarView(workspace: workspace)
                 }
-                terminalContent
+                centerColumn
             }
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
@@ -66,6 +72,17 @@ private struct WorkspaceSessionDetailView: View {
         }
         .onAppear {
             workspace.applyDefaultFileTreeVisibilityIfNeeded(store.appSettings.directoryTreeEnabled)
+        }
+    }
+
+    @ViewBuilder
+    private var centerColumn: some View {
+        if scVM.activeEditorURL != nil {
+            CenterEditorOverlay(vm: scVM)
+        } else if scVM.centerDoc != nil || scVM.centerDocLoading {
+            CenterDiffOverlay(vm: scVM)
+        } else {
+            terminalContent
         }
     }
 

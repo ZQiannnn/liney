@@ -70,10 +70,90 @@ final class GitSourceControlViewModel: ObservableObject {
     @Published var centerDoc: DiffFileDocument?
     @Published var centerDocLoading: Bool = false
     @Published var centerSubject: String?
+    /// Open editor tabs in display order. Each URL has a corresponding state
+    /// in `editorStates`. Tabs persist across switches so unsaved buffers
+    /// survive jumping between tabs.
+    @Published var openEditors: [URL] = []
+    @Published var activeEditorURL: URL?
+    private var editorStates: [URL: CodeEditorState] = [:]
+
+    /// Latest live instance — read from `closeFocusedPaneOrTab` so Cmd+W can
+    /// dismiss the center overlay before the global Close-Tab handler runs.
+    nonisolated(unsafe) static weak var currentInstance: GitSourceControlViewModel?
 
     let historyState = HistoryWindowState()
     private let svc = GitSourceControlService()
     private let repoSvc = GitRepositoryService()
+
+    init() {
+        Self.currentInstance = self
+    }
+
+    var hasActiveCenterOverlay: Bool {
+        activeEditorURL != nil || centerDoc != nil || centerDocLoading
+    }
+
+    func showCenterEditor(url: URL) {
+        let normalized = url.standardizedFileURL
+        // Diff and editor overlays are mutually exclusive.
+        centerDoc = nil
+        centerDocLoading = false
+        centerSubject = nil
+        if editorStates[normalized] == nil {
+            let state = CodeEditorState(url: normalized)
+            editorStates[normalized] = state
+            Task { await state.load() }
+        }
+        if !openEditors.contains(normalized) {
+            openEditors.append(normalized)
+        }
+        activeEditorURL = normalized
+    }
+
+    func closeEditorTab(_ url: URL) {
+        let normalized = url.standardizedFileURL
+        guard let idx = openEditors.firstIndex(of: normalized) else { return }
+        openEditors.remove(at: idx)
+        editorStates.removeValue(forKey: normalized)
+        if activeEditorURL == normalized {
+            if idx < openEditors.count {
+                activeEditorURL = openEditors[idx]
+            } else {
+                activeEditorURL = openEditors.last
+            }
+        }
+    }
+
+    func activateEditorTab(_ url: URL) {
+        let normalized = url.standardizedFileURL
+        guard openEditors.contains(normalized) else { return }
+        activeEditorURL = normalized
+    }
+
+    func editorState(for url: URL) -> CodeEditorState? {
+        editorStates[url.standardizedFileURL]
+    }
+
+    func clearCenterEditor() {
+        // Closes the active tab. If it was the last one, the overlay falls
+        // back to terminal automatically.
+        if let active = activeEditorURL {
+            closeEditorTab(active)
+        }
+    }
+
+    private func closeAllEditorTabs() {
+        openEditors.removeAll()
+        editorStates.removeAll()
+        activeEditorURL = nil
+    }
+
+    func clearCenterOverlay() {
+        clearCenterDiff()
+        if let active = activeEditorURL {
+            closeEditorTab(active)
+        }
+    }
 
     var uniqueChanges: [GitStatusEntry] {
         var seenPath = Set<String>()
@@ -177,6 +257,7 @@ final class GitSourceControlViewModel: ObservableObject {
         centerSubject = "\(base) … \(head) · \(path)"
         centerDocLoading = true
         centerDoc = nil
+        closeAllEditorTabs()
         Task { @MainActor in
             do {
                 let patch = try await self.repoSvc.diffPatchBetweenCommits(
@@ -218,6 +299,7 @@ final class GitSourceControlViewModel: ObservableObject {
         centerSubject = path
         centerDocLoading = true
         centerDoc = nil
+        closeAllEditorTabs()
         Task { @MainActor in
             do {
                 let patch = try await self.svc.diffPatch(for: path, in: cwd)
@@ -238,6 +320,7 @@ final class GitSourceControlViewModel: ObservableObject {
         centerSubject = "\(String(commit.prefix(7))) · \(path)"
         centerDocLoading = true
         centerDoc = nil
+        closeAllEditorTabs()
         Task { @MainActor in
             do {
                 let patch = try await self.repoSvc.diffPatchBetweenCommits(
@@ -575,7 +658,8 @@ private struct ChangeRow: View {
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(statusColor).frame(width: 12)
             Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(.secondary)
-            Text(entry.path).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+            Text(URL(fileURLWithPath: entry.path).lastPathComponent)
+                .font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 4)
             if let stats = vm.fileStats[entry.path] {
                 Text("+\(stats.0)").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(.green)
@@ -858,6 +942,100 @@ struct CenterDiffOverlay: View {
             }
         }
         .background(LineyTheme.appBackground)
+    }
+}
+
+struct CenterEditorOverlay: View {
+    @ObservedObject var vm: GitSourceControlViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            EditorTabBar(vm: vm)
+            Divider()
+            if let activeURL = vm.activeEditorURL,
+               let state = vm.editorState(for: activeURL) {
+                WorkspaceCodeEditorView(state: state)
+            } else {
+                ContentUnavailableView(
+                    "No file open",
+                    systemImage: "doc.text",
+                    description: Text("Double-click a file in the file tree.")
+                )
+            }
+        }
+        .background(LineyTheme.appBackground)
+    }
+}
+
+private struct EditorTabBar: View {
+    @ObservedObject var vm: GitSourceControlViewModel
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                ForEach(vm.openEditors, id: \.self) { url in
+                    EditorTabItem(
+                        url: url,
+                        isActive: vm.activeEditorURL == url,
+                        isDirty: vm.editorState(for: url)?.isDirty ?? false,
+                        onActivate: { vm.activateEditorTab(url) },
+                        onClose: { vm.closeEditorTab(url) }
+                    )
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(height: 30)
+        .background(LineyTheme.chromeBackground)
+    }
+}
+
+private struct EditorTabItem: View {
+    let url: URL
+    let isActive: Bool
+    let isDirty: Bool
+    let onActivate: () -> Void
+    let onClose: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text").font(.system(size: 10))
+                .foregroundStyle(isActive ? LineyTheme.accent : LineyTheme.mutedText)
+            Text(url.lastPathComponent)
+                .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? LineyTheme.tertiaryText : LineyTheme.secondaryText)
+                .lineLimit(1)
+            if isDirty {
+                Circle().fill(LineyTheme.warning).frame(width: 6, height: 6)
+            }
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(LineyTheme.mutedText)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+                    .background(
+                        Circle().fill(isHovered ? LineyTheme.subtleFill : .clear)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Close tab")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(isActive ? LineyTheme.appBackground : Color.clear)
+        .overlay(alignment: .bottom) {
+            if isActive {
+                Rectangle().fill(LineyTheme.accent).frame(height: 2)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(LineyTheme.border.opacity(0.4)).frame(width: 1)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onActivate)
+        .onHover { isHovered = $0 }
     }
 }
 

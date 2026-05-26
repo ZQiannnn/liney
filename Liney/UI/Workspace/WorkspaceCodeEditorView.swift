@@ -5,7 +5,15 @@
 
 import AppKit
 import Combine
+import Highlightr
 import SwiftUI
+import WebKit
+
+enum EditorViewMode: Hashable {
+    case source
+    case preview
+    case split
+}
 
 /// Plain-text / source-code editor for the right-hand preview panel. Loads a
 /// file from disk into an in-memory buffer, lets the user edit it (when not
@@ -14,13 +22,7 @@ import SwiftUI
 /// a TreeSitter / Highlightr dependency.
 struct WorkspaceCodeEditorView: View {
     @ObservedObject private var localization = LocalizationManager.shared
-    @StateObject private var state: CodeEditorState
-    let onClose: () -> Void
-
-    init(url: URL, onClose: @escaping () -> Void) {
-        _state = StateObject(wrappedValue: CodeEditorState(url: url))
-        self.onClose = onClose
-    }
+    @ObservedObject var state: CodeEditorState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,13 +34,7 @@ struct WorkspaceCodeEditorView: View {
                 case .loading:
                     ProgressView().controlSize(.small)
                 case .loaded:
-                    CodeTextView(
-                        text: Binding(
-                            get: { state.bufferContents },
-                            set: { state.bufferContents = $0 }
-                        ),
-                        isEditable: state.isEditable
-                    )
+                    contentArea
                 case .failed(let message):
                     errorOverlay(message)
                 }
@@ -49,12 +45,45 @@ struct WorkspaceCodeEditorView: View {
             }
         }
         .background(LineyTheme.panelBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(LineyTheme.border, lineWidth: 1)
+    }
+
+    @ViewBuilder
+    private var contentArea: some View {
+        if state.isMarkdown {
+            switch state.viewMode {
+            case .source:
+                sourceView
+            case .preview:
+                previewView
+            case .split:
+                HSplitView {
+                    sourceView
+                        .frame(minWidth: 200)
+                    previewView
+                        .frame(minWidth: 200)
+                }
+            }
+        } else {
+            sourceView
+        }
+    }
+
+    private var sourceView: some View {
+        CodeTextView(
+            text: Binding(
+                get: { state.bufferContents },
+                set: { state.bufferContents = $0 }
+            ),
+            isEditable: state.isEditable,
+            language: state.languageHint
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .task(id: state.url) { await state.load() }
+    }
+
+    private var previewView: some View {
+        MarkdownPreviewView(
+            markdown: state.bufferContents,
+            baseURL: state.url.deletingLastPathComponent()
+        )
     }
 
     // MARK: - Header
@@ -82,6 +111,11 @@ struct WorkspaceCodeEditorView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            if state.isMarkdown {
+                modeSegmented
+                    .padding(.trailing, 4)
+            }
+
             // Edit / Lock toggle
             iconButton(
                 state.isEditable ? "lock.open" : "lock",
@@ -96,6 +130,7 @@ struct WorkspaceCodeEditorView: View {
                        enabled: state.isDirty) {
                 Task { await state.save() }
             }
+            .keyboardShortcut("s", modifiers: .command)
 
             // Discard
             iconButton("arrow.uturn.backward",
@@ -109,16 +144,37 @@ struct WorkspaceCodeEditorView: View {
                        help: localized("editor.reload")) {
                 Task { await state.load() }
             }
-
-            iconButton("xmark.circle.fill",
-                       help: localized("editor.close"),
-                       tint: LineyTheme.mutedText) {
-                onClose()
-            }
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
         .background(LineyTheme.paneHeaderBackground)
+    }
+
+    private var modeSegmented: some View {
+        HStack(spacing: 1) {
+            modeButton(.source, symbol: "curlybraces", help: localized("editor.mode.source"))
+            modeButton(.preview, symbol: "doc.richtext", help: localized("editor.mode.preview"))
+            modeButton(.split, symbol: "rectangle.split.2x1", help: localized("editor.mode.split"))
+        }
+        .background(LineyTheme.subtleFill, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+
+    private func modeButton(_ mode: EditorViewMode, symbol: String, help: String) -> some View {
+        Button {
+            state.viewMode = mode
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+                .background(
+                    state.viewMode == mode ? LineyTheme.accent.opacity(0.25) : .clear,
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                )
+                .foregroundStyle(state.viewMode == mode ? LineyTheme.accent : LineyTheme.secondaryText)
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func iconButton(
@@ -212,12 +268,27 @@ final class CodeEditorState: ObservableObject {
     @Published private(set) var phase: Phase = .loading
     @Published var bufferContents: String = ""
     @Published private(set) var diskContents: String = ""
-    @Published var isEditable: Bool = false
+    @Published var isEditable: Bool = true
     @Published var saveError: String?
+    @Published var viewMode: EditorViewMode
 
     var isDirty: Bool { bufferContents != diskContents }
+    var isMarkdown: Bool {
+        WorkspacePreviewContent.markdownExtensions.contains(url.pathExtension.lowercased())
+    }
 
-    init(url: URL) { self.url = url }
+    /// Highlightr language identifier inferred from the file extension /
+    /// basename, or `nil` when no syntax mode applies (plain text).
+    var languageHint: String? {
+        SyntaxLanguage.identifier(for: url)
+    }
+
+    init(url: URL) {
+        self.url = url
+        // Markdown defaults to rendered preview; everything else to source.
+        let ext = url.pathExtension.lowercased()
+        self.viewMode = WorkspacePreviewContent.markdownExtensions.contains(ext) ? .preview : .source
+    }
 
     func load() async {
         phase = .loading
@@ -262,26 +333,31 @@ final class CodeEditorState: ObservableObject {
 private struct CodeTextView: NSViewRepresentable {
     @Binding var text: String
     let isEditable: Bool
+    let language: String?
+
+    static let backgroundFill = NSColor(red: 0.085, green: 0.095, blue: 0.115, alpha: 1)
+    static let foregroundFill = NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1)
+    static let highlightTheme = "atom-one-dark"
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = false
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
+        let textStorage = CodeAttributedString()
+        textStorage.highlightr.setTheme(to: Self.highlightTheme)
+        textStorage.highlightr.theme.codeFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textStorage.language = language
 
-        let contentSize = scrollView.contentSize
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: contentSize.width, height: contentSize.height))
+        let layoutManager = NSLayoutManager()
+        textStorage.addLayoutManager(layoutManager)
+        let textContainer = NSTextContainer(containerSize: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        textContainer.lineFragmentPadding = 0
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = NSTextView(frame: .zero, textContainer: textContainer)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = true
-        textView.autoresizingMask = []
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.heightTracksTextView = false
-
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
         textView.delegate = context.coordinator
         textView.isEditable = isEditable
         textView.isSelectable = true
@@ -298,30 +374,39 @@ private struct CodeTextView: NSViewRepresentable {
         textView.smartInsertDeleteEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.backgroundColor = NSColor.textBackgroundColor
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.insertionPointColor = Self.foregroundFill
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor.systemBlue.withAlphaComponent(0.35)
+        ]
+        textView.backgroundColor = Self.backgroundFill
         textView.drawsBackground = true
+        textView.appearance = NSAppearance(named: .darkAqua)
         textView.string = text
 
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = Self.backgroundFill
         scrollView.documentView = textView
-
-        let ruler = LineNumberRulerView(textView: textView)
-        scrollView.verticalRulerView = ruler
-        scrollView.hasVerticalRuler = true
-        scrollView.rulersVisible = true
 
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        if let storage = textView.textStorage as? CodeAttributedString, storage.language != language {
+            storage.language = language
+        }
         if textView.string != text {
             let ranges = textView.selectedRanges
             textView.string = text
             textView.selectedRanges = ranges
         }
         textView.isEditable = isEditable
-        scrollView.verticalRulerView?.needsDisplay = true
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -332,94 +417,47 @@ private struct CodeTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
-            tv.enclosingScrollView?.verticalRulerView?.needsDisplay = true
         }
     }
 }
 
-// MARK: - Line number ruler
+// MARK: - Markdown preview
 
-private final class LineNumberRulerView: NSRulerView {
-    init(textView: NSTextView) {
-        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
-        clientView = textView
-        ruleThickness = 44
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(invalidate),
-            name: NSView.boundsDidChangeNotification,
-            object: textView.enclosingScrollView?.contentView
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(invalidate),
-            name: NSText.didChangeNotification,
-            object: textView
-        )
+private struct MarkdownPreviewView: NSViewRepresentable {
+    let markdown: String
+    let baseURL: URL
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.allowsBackForwardNavigationGestures = false
+        loadIfChanged(webView: webView, context: context)
+        return webView
     }
 
-    required init(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        loadIfChanged(webView: webView, context: context)
+    }
 
-    @objc private func invalidate() { needsDisplay = true }
-
-    override func drawHashMarksAndLabels(in rect: NSRect) {
-        guard let textView = clientView as? NSTextView,
-              let layoutManager = textView.layoutManager,
-              let textContainer = textView.textContainer else { return }
-
-        NSColor.windowBackgroundColor.setFill()
-        rect.fill()
-
-        let borderX = bounds.width - 0.5
-        NSColor.separatorColor.setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 0.5
-        path.move(to: NSPoint(x: borderX, y: rect.minY))
-        path.line(to: NSPoint(x: borderX, y: rect.maxY))
-        path.stroke()
-
-        let nsText = textView.string as NSString
-        guard nsText.length > 0 else {
-            drawNumber(1, atY: textView.textContainerInset.height - (scrollView?.contentView.bounds.origin.y ?? 0))
+    private func loadIfChanged(webView: WKWebView, context: Context) {
+        // Skip reload when neither the markdown nor the baseURL changed —
+        // re-rendering on every keystroke is expensive and flashes the view.
+        if context.coordinator.lastMarkdown == markdown,
+           context.coordinator.lastBaseURL == baseURL {
             return
         }
-
-        let visibleOrigin = scrollView?.contentView.bounds.origin ?? .zero
-        let visibleRect = scrollView?.contentView.bounds ?? .zero
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-
-        var lineNumber = 1
-        if charRange.location > 0 {
-            nsText.enumerateSubstrings(
-                in: NSRange(location: 0, length: charRange.location),
-                options: [.byLines, .substringNotRequired]
-            ) { _, _, _, _ in
-                lineNumber += 1
-            }
-        }
-
-        let inset = textView.textContainerInset.height
-
-        nsText.enumerateSubstrings(
-            in: charRange,
-            options: [.byLines, .substringNotRequired]
-        ) { _, lineRange, _, _ in
-            let glyphIndex = layoutManager.glyphIndexForCharacter(at: lineRange.location)
-            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-            let y = lineRect.origin.y + inset - visibleOrigin.y
-            self.drawNumber(lineNumber, atY: y)
-            lineNumber += 1
-        }
+        context.coordinator.lastMarkdown = markdown
+        context.coordinator.lastBaseURL = baseURL
+        let html = MarkdownToHTMLRenderer.renderDocument(markdown, title: baseURL.lastPathComponent)
+        webView.loadHTMLString(html, baseURL: baseURL)
     }
 
-    private func drawNumber(_ number: Int, atY y: CGFloat) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor
-        ]
-        let string = NSAttributedString(string: "\(number)", attributes: attrs)
-        let size = string.size()
-        string.draw(at: NSPoint(x: ruleThickness - size.width - 8, y: y + 1))
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var lastMarkdown: String?
+        var lastBaseURL: URL?
     }
 }
+

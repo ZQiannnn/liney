@@ -27,15 +27,6 @@ struct WorkspacePreviewPanel: View {
     private func localized(_ key: String) -> String { localization.string(key) }
 
     var body: some View {
-        if case let .file(url) = content,
-           WorkspacePreviewContent.fileRenderMode(for: url) == .text {
-            WorkspaceCodeEditorView(url: url, onClose: onClose)
-        } else {
-            webBody
-        }
-    }
-
-    private var webBody: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(LineyTheme.border)

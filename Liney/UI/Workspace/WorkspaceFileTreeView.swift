@@ -189,11 +189,10 @@ private struct FileTreeContent: View {
     private func open(entry: DirectoryTreeEntry) {
         selectedPath = entry.url.path
         guard !entry.isDirectory else { return }
-        if let content = WorkspacePreviewContent.makeFile(entry.url) {
-            workspace.openPreview(content)
-        } else {
-            NSWorkspace.shared.open(entry.url)
-        }
+        // Default everything to the inline center editor. Non-UTF-8 files
+        // surface as an in-editor error so the user can still fall back to
+        // "Open Externally" via the context menu.
+        GitSourceControlViewModel.currentInstance?.showCenterEditor(url: entry.url)
     }
 
     private func handle(command: FileTreeCommand, for entry: DirectoryTreeEntry) {
@@ -203,9 +202,7 @@ private struct FileTreeContent: View {
         case .openExternal:
             NSWorkspace.shared.open(entry.url)
         case .openInPreview:
-            if let content = WorkspacePreviewContent.makeFile(entry.url) {
-                workspace.openPreview(content)
-            }
+            GitSourceControlViewModel.currentInstance?.showCenterEditor(url: entry.url)
         case .copyPath:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(entry.url.path, forType: .string)

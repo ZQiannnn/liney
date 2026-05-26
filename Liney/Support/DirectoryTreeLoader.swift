@@ -15,9 +15,11 @@ nonisolated struct DirectoryTreeEntry: Identifiable, Hashable {
 
     var id: String { url.path }
 
-    /// `true` when this file can be rendered in the preview panel.
+    /// `true` when this file can be opened in the inline center editor.
+    /// Everything that isn't a directory is openable; non-UTF-8 / oversized
+    /// files surface as an in-editor error so we don't need to gate here.
     var isPreviewable: Bool {
-        !isDirectory && WorkspacePreviewContent.isPreviewable(url)
+        !isDirectory
     }
 
     /// SF Symbol representing the entry in the tree.

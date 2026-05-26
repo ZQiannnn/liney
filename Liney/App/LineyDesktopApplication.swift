@@ -356,6 +356,19 @@ public final class LineyDesktopApplication: NSObject {
 
     /// Smart close: close focused pane if multiple panes exist, otherwise close the tab.
     func closeFocusedPaneOrTab() {
+        // Auxiliary windows (Diff, History) handle Cmd+W as a window close
+        // rather than dispatching to the workspace pane/tab graph.
+        if let key = NSApp.keyWindow, Self.isAuxiliaryWindow(key) {
+            key.performClose(nil)
+            return
+        }
+        // Center-pane overlay (inline diff / inline editor) — close it first,
+        // returning to the terminal view, before falling through to closing a
+        // pane/tab.
+        if let vm = GitSourceControlViewModel.currentInstance, vm.hasActiveCenterOverlay {
+            vm.clearCenterOverlay()
+            return
+        }
         guard let store = activeStore,
               let workspace = store.selectedWorkspace else { return }
         if workspace.paneOrder.count > 1,
@@ -365,6 +378,11 @@ public final class LineyDesktopApplication: NSObject {
                   let tabID = workspace.activeTabID {
             store.closeTab(in: workspace, tabID: tabID)
         }
+    }
+
+    private static func isAuxiliaryWindow(_ window: NSWindow) -> Bool {
+        let id = window.identifier?.rawValue ?? ""
+        return id == "liney.diff" || id == "liney.history"
     }
 
     func findInFocusedPane() {
@@ -461,6 +479,12 @@ public final class LineyDesktopApplication: NSObject {
     }
 
     var canCloseFocusedPaneOrTab: Bool {
+        if let key = NSApp.keyWindow, Self.isAuxiliaryWindow(key) {
+            return true
+        }
+        if GitSourceControlViewModel.currentInstance?.hasActiveCenterOverlay == true {
+            return true
+        }
         guard let workspace = activeStore?.selectedWorkspace else { return false }
         return workspace.paneOrder.count > 1 || (workspace.tabs.count > 1 && workspace.activeTabID != nil)
     }

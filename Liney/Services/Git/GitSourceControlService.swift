@@ -212,23 +212,24 @@ actor GitSourceControlService {
         let st = try await git(["diff", "--cached", "--", path], cwd: cwd)
         var out = ""
         if !st.stdout.isEmpty {
-            out += "# staged\n" + st.stdout
+            out += st.stdout
         }
         if !wt.stdout.isEmpty {
             if !out.isEmpty { out += "\n" }
-            out += "# unstaged\n" + wt.stdout
+            out += wt.stdout
         }
         if out.isEmpty {
-            // untracked: dump file contents as if new
-            let cat = try await git(["status", "--porcelain", "--", path], cwd: cwd)
-            if cat.stdout.hasPrefix("??") {
-                let runner2 = ShellCommandRunner()
-                let r = try await runner2.run(
-                    executable: "/usr/bin/env",
-                    arguments: ["cat", path],
-                    currentDirectory: cwd
+            // Untracked: synthesize a unified-diff patch against /dev/null so
+            // the renderer sees every line as added. `git diff --no-index`
+            // exits 1 when files differ, which is "success" for our purpose,
+            // so we read stdout regardless of exit code.
+            let status = try await git(["status", "--porcelain", "--", path], cwd: cwd)
+            if status.stdout.hasPrefix("??") {
+                let patch = try await git(
+                    ["diff", "--no-index", "--no-color", "--", "/dev/null", path],
+                    cwd: cwd
                 )
-                out = "# untracked (new file)\n" + r.stdout
+                out = patch.stdout
             }
         }
         return out

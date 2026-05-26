@@ -1,6 +1,15 @@
 {
-  "originHash" : "bd229738e40b66b274934c55674cb8f7977f165240ee96d74b6c4a36bd36a137",
+  "originHash" : "e859e3f4f29548df432bd7e452cb11fff4f61ba02351939f78d18a3104b75e7e",
   "pins" : [
+    {
+      "identity" : "highlightr",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/raspu/Highlightr",
+      "state" : {
+        "revision" : "05e7fcc63b33925cd0c1faaa205cdd5681e7bbef",
+        "version" : "2.3.0"
+      }
+    },
     {
       "identity" : "sentry-cocoa",
       "kind" : "remoteSourceControl",

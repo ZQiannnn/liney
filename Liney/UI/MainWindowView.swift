@@ -407,17 +407,6 @@ struct MainWindowView: View {
                 .help(isCanvasPresented ? localized("main.canvas.hide") : localized("main.canvas.show"))
 
                 Button {
-                    toggleRightPanel(.sourceControl)
-                } label: {
-                    Image(systemName: "arrow.triangle.branch")
-                        .padding(4 * uiScale)
-                        .foregroundStyle(rightPanelMode == .sourceControl ? Color.accentColor : .primary)
-                }
-                .scaleEffect(uiScale)
-                .accessibilityLabel("Source Control")
-                .help("Toggle Source Control panel")
-
-                Button {
                     store.dispatch(.toggleCommandPalette)
                 } label: {
                     Image(systemName: "command")
@@ -473,6 +462,17 @@ struct MainWindowView: View {
                 .disabled(!hasSelectedWorkspace)
                 .accessibilityLabel(localized("main.toolbar.toggleFileTree"))
                 .help(localized("main.toolbar.toggleFileTree"))
+
+                Button {
+                    toggleRightPanel(.sourceControl)
+                } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .padding(4 * uiScale)
+                        .foregroundStyle(rightPanelMode == .sourceControl ? Color.accentColor : .primary)
+                }
+                .scaleEffect(uiScale)
+                .accessibilityLabel("Source Control")
+                .help("Toggle Source Control panel")
 
                 Menu {
                     webPreviewMenuContent
@@ -757,23 +757,14 @@ struct MainWindowView: View {
     @ViewBuilder
     private var detailWithRightPanel: some View {
         if rightPanelMode == .none {
-            WorkspaceDetailView()
+            WorkspaceDetailView(scVM: scVM)
         } else {
             HSplitView {
-                centerContent
+                WorkspaceDetailView(scVM: scVM)
                     .frame(minWidth: 300)
                 GitSourceControlPanel(vm: scVM)
-                    .frame(minWidth: 320, idealWidth: 380, maxWidth: 600)
+                    .frame(minWidth: 200, idealWidth: 240, maxWidth: 440)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var centerContent: some View {
-        if scVM.centerDoc != nil || scVM.centerDocLoading {
-            CenterDiffOverlay(vm: scVM)
-        } else {
-            WorkspaceDetailView()
         }
     }
 

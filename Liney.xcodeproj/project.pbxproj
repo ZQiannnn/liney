@@ -11,6 +11,7 @@
 		7F0A1B2C3D4E5F6071829301 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 7F0A1B2C3D4E5F6071829302 /* Sparkle */; };
 		8B1A2B3C4D5E6F708090A001 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8B1A2B3C4D5E6F708090A002 /* XCTest.framework */; };
 		9D1A2B3C4D5E6F708091A001 /* YiTong in Frameworks */ = {isa = PBXBuildFile; productRef = 9D1A2B3C4D5E6F708091A002 /* YiTong */; };
+		A1B2C3D4E5F60718AABB0001 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718AABB0002 /* Highlightr */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9D1A2B3C4D5E6F708091A001 /* YiTong in Frameworks */,
+				A1B2C3D4E5F60718AABB0001 /* Highlightr in Frameworks */,
 				7F0A1B2C3D4E5F6071829301 /* Sparkle in Frameworks */,
 				5A4973AA2F6F90ED00B79656 /* Sentry in Frameworks */,
 			);
@@ -142,6 +144,7 @@
 			name = Liney;
 			packageProductDependencies = (
 				9D1A2B3C4D5E6F708091A002 /* YiTong */,
+				A1B2C3D4E5F60718AABB0002 /* Highlightr */,
 				7F0A1B2C3D4E5F6071829302 /* Sparkle */,
 				5A4973A92F6F90ED00B79656 /* Sentry */,
 			);
@@ -199,6 +202,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				9D1A2B3C4D5E6F708091A003 /* XCRemoteSwiftPackageReference "YiTong" */,
+				A1B2C3D4E5F60718AABB0003 /* XCRemoteSwiftPackageReference "Highlightr" */,
 				7F0A1B2C3D4E5F6071829303 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				5A4973A82F6F90ED00B79656 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 			);
@@ -685,6 +689,14 @@
 				version = 0.2.0;
 			};
 		};
+		A1B2C3D4E5F60718AABB0003 /* XCRemoteSwiftPackageReference "Highlightr" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/raspu/Highlightr";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.2.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -702,6 +714,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 9D1A2B3C4D5E6F708091A003 /* XCRemoteSwiftPackageReference "YiTong" */;
 			productName = YiTong;
+		};
+		A1B2C3D4E5F60718AABB0002 /* Highlightr */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F60718AABB0003 /* XCRemoteSwiftPackageReference "Highlightr" */;
+			productName = Highlightr;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -27,7 +27,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Optional PAT (repo + workflow scopes) for pushing tags whose commits
+          # touch .github/workflows/*. Falls back to GITHUB_TOKEN.
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Configure git identity
         run: |
@@ -96,9 +98,29 @@ jobs:
       - name: Push (unless dry run)
         if: steps.diff.outputs.has_new == 'true' && inputs.dry_run != '1'
         run: |
-          set -euo pipefail
-          git push origin "$OUR_BRANCH"
-          git push origin --tags
+          set -u
+          git push origin "$OUR_BRANCH" || true
+          # Push tags individually so a workflow-permission rejection on one
+          # tag doesn't block the rest. (GITHUB_TOKEN cannot push commits
+          # that touch .github/workflows/* without a PAT with `workflow` scope.)
+          FAILED=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            if git push origin "refs/tags/$tag" 2>&1 | tee /tmp/push.log; then
+              echo "  pushed $tag"
+            else
+              if grep -q "without .workflows. permission" /tmp/push.log; then
+                echo "  ⏭  skipped $tag (workflow file in commit — needs PAT with workflow scope)"
+              else
+                echo "  ❌ failed $tag"
+              fi
+              FAILED+=("$tag")
+            fi
+          done < /tmp/new_tags.txt
+          if [[ ${#FAILED[@]} -gt 0 ]]; then
+            echo "::warning::Some tags could not be pushed by GITHUB_TOKEN: ${FAILED[*]}"
+            echo "To push these, set a SYNC_PAT secret with 'repo + workflow' scopes."
+          fi
 
       - name: Summary
         if: always()

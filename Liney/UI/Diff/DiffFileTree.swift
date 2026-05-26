@@ -5,21 +5,25 @@
 
 import Foundation
 
-struct DiffFileTreeNode: Identifiable, Hashable, Sendable {
+struct PathTreeNode<Item>: Identifiable {
     let id: String
     let name: String
     let path: String
-    let file: DiffChangedFile?
-    let children: [DiffFileTreeNode]
+    let item: Item?
+    let children: [PathTreeNode<Item>]
 
-    var isFile: Bool { file != nil }
+    var isLeaf: Bool { item != nil }
 }
 
-enum DiffFileTree {
-    static func build(from files: [DiffChangedFile]) -> [DiffFileTreeNode] {
-        let root = MutableNode(name: "", path: "")
-        for file in files {
-            let segments = file.displayPath
+enum PathTree {
+    static func build<Item>(
+        items: [Item],
+        path: (Item) -> String,
+        leafID: (Item) -> String
+    ) -> [PathTreeNode<Item>] {
+        let root = MutableNode<Item>(name: "", path: "")
+        for item in items {
+            let segments = path(item)
                 .split(separator: "/", omittingEmptySubsequences: true)
                 .map(String.init)
             guard !segments.isEmpty else { continue }
@@ -28,16 +32,17 @@ enum DiffFileTree {
             var accumulated = ""
             for (index, segment) in segments.enumerated() {
                 accumulated = accumulated.isEmpty ? segment : accumulated + "/" + segment
-                let next: MutableNode
+                let next: MutableNode<Item>
                 if let existing = current.childrenByName[segment] {
                     next = existing
                 } else {
-                    next = MutableNode(name: segment, path: accumulated)
+                    next = MutableNode<Item>(name: segment, path: accumulated)
                     current.childrenByName[segment] = next
                     current.orderedChildNames.append(segment)
                 }
                 if index == segments.count - 1 {
-                    next.file = file
+                    next.item = item
+                    next.leafID = leafID(item)
                 }
                 current = next
             }
@@ -45,35 +50,41 @@ enum DiffFileTree {
         return snapshot(root).children
     }
 
-    private static func snapshot(_ node: MutableNode) -> DiffFileTreeNode {
+    private static func snapshot<Item>(_ node: MutableNode<Item>) -> PathTreeNode<Item> {
         let kids = node.orderedChildNames
             .compactMap { node.childrenByName[$0] }
             .map(snapshot)
             .sorted { lhs, rhs in
-                if lhs.isFile != rhs.isFile { return !lhs.isFile }
+                if lhs.isLeaf != rhs.isLeaf { return !lhs.isLeaf }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
 
         let id: String
-        if let file = node.file {
-            id = file.id
+        if let leafID = node.leafID {
+            id = leafID
         } else {
             id = "dir:" + node.path
         }
-        return DiffFileTreeNode(
+        return PathTreeNode<Item>(
             id: id,
             name: node.name,
             path: node.path,
-            file: node.file,
+            item: node.item,
             children: kids
         )
     }
 
-    private final class MutableNode {
+    static func leafCount<Item>(in node: PathTreeNode<Item>) -> Int {
+        if node.isLeaf { return 1 }
+        return node.children.reduce(0) { $0 + leafCount(in: $1) }
+    }
+
+    private final class MutableNode<Item> {
         let name: String
         let path: String
-        var file: DiffChangedFile?
-        var childrenByName: [String: MutableNode] = [:]
+        var item: Item?
+        var leafID: String?
+        var childrenByName: [String: MutableNode<Item>] = [:]
         var orderedChildNames: [String] = []
 
         init(name: String, path: String) {

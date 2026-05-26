@@ -530,6 +530,12 @@ private struct CountChip: View {
 
 private struct ChangesTabContent: View {
     @ObservedObject var vm: GitSourceControlViewModel
+    @State private var collapsedFolders: Set<String> = []
+
+    private var tree: [PathTreeNode<GitStatusEntry>] {
+        PathTree.build(items: vm.uniqueChanges, path: { $0.path }, leafID: { $0.id })
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
@@ -543,8 +549,10 @@ private struct ChangesTabContent: View {
                     .buttonStyle(.plain).help("Stage all")
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)
-                ForEach(vm.uniqueChanges) { entry in
-                    ChangeRow(entry: entry, vm: vm)
+                ForEach(tree) { node in
+                    PathTreeVStackRow(node: node, depth: 0, collapsedFolders: $collapsedFolders) { entry in
+                        ChangeRow(entry: entry, vm: vm)
+                    }
                 }
                 if vm.uniqueChanges.isEmpty {
                     Text("Working directory is clean.")
@@ -709,9 +717,13 @@ private struct RefChip: View {
 private struct CommitDetailTabContent: View {
     let commitHash: String
     @ObservedObject var vm: GitSourceControlViewModel
+    @State private var collapsedFolders: Set<String> = []
 
     private var files: [DiffChangedFile] { vm.commitFiles[commitHash] ?? [] }
     private var selectedFile: String? { vm.commitSelectedFile[commitHash] }
+    private var tree: [PathTreeNode<DiffChangedFile>] {
+        PathTree.build(items: files, path: { $0.displayPath }, leafID: { $0.id })
+    }
 
     var body: some View {
         ScrollView {
@@ -723,14 +735,13 @@ private struct CommitDetailTabContent: View {
                     Text("No file changes in this commit.")
                         .font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
                 } else {
-                    ForEach(files) { file in
-                        CommitFileRow(
-                            file: file,
-                            isSelected: selectedFile == file.id
-                        )
-                        .onTapGesture {
-                            vm.commitSelectedFile[commitHash] = file.id
-                            vm.showCenterDiff(commit: commitHash, file: file)
+                    ForEach(tree) { node in
+                        PathTreeVStackRow(node: node, depth: 0, collapsedFolders: $collapsedFolders) { file in
+                            CommitFileRow(file: file, isSelected: selectedFile == file.id)
+                                .onTapGesture {
+                                    vm.commitSelectedFile[commitHash] = file.id
+                                    vm.showCenterDiff(commit: commitHash, file: file)
+                                }
                         }
                     }
                 }
@@ -768,6 +779,10 @@ private struct CompareTabContent: View {
     private var key: String { base + "\u{0000}" + head }
     private var files: [DiffChangedFile] { vm.compareFiles[key] ?? [] }
     private var selectedFile: String? { vm.compareSelectedFile[key] }
+    @State private var collapsedFolders: Set<String> = []
+    private var tree: [PathTreeNode<DiffChangedFile>] {
+        PathTree.build(items: files, path: { $0.displayPath }, leafID: { $0.id })
+    }
 
     var body: some View {
         ScrollView {
@@ -794,12 +809,14 @@ private struct CompareTabContent: View {
                     Text("No differences between \(base) and \(head).")
                         .font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
                 } else {
-                    ForEach(files) { file in
-                        CommitFileRow(file: file, isSelected: selectedFile == file.id)
-                            .onTapGesture {
-                                vm.compareSelectedFile[key] = file.id
-                                vm.showCenterDiff(compareBase: base, head: head, file: file)
-                            }
+                    ForEach(tree) { node in
+                        PathTreeVStackRow(node: node, depth: 0, collapsedFolders: $collapsedFolders) { file in
+                            CommitFileRow(file: file, isSelected: selectedFile == file.id)
+                                .onTapGesture {
+                                    vm.compareSelectedFile[key] = file.id
+                                    vm.showCenterDiff(compareBase: base, head: head, file: file)
+                                }
+                        }
                     }
                 }
             }
@@ -851,5 +868,58 @@ private func diffStatusColor(_ s: DiffFileStatus) -> Color {
     case .deleted: return .red
     case .renamed, .copied: return .blue
     case .unknown: return .secondary
+    }
+}
+
+// MARK: - Path tree row (VStack-based)
+
+private struct PathTreeVStackRow<Item, Leaf: View>: View {
+    let node: PathTreeNode<Item>
+    let depth: Int
+    @Binding var collapsedFolders: Set<String>
+    @ViewBuilder let leafView: (Item) -> Leaf
+
+    var body: some View {
+        if let item = node.item {
+            leafView(item)
+                .padding(.leading, CGFloat(depth) * 12)
+        } else {
+            let expanded = !collapsedFolders.contains(node.id)
+            Button {
+                if expanded {
+                    collapsedFolders.insert(node.id)
+                } else {
+                    collapsedFolders.remove(node.id)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(node.name)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text("\(PathTree.leafCount(in: node))")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, CGFloat(depth) * 12)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                ForEach(node.children) { child in
+                    PathTreeVStackRow(node: child, depth: depth + 1, collapsedFolders: $collapsedFolders, leafView: leafView)
+                }
+            }
+        }
     }
 }

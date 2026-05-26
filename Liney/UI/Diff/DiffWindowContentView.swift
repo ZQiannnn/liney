@@ -21,8 +21,12 @@ struct DiffWindowContentView: View {
     @AppStorage("liney.diff.viewStyle") private var diffStyleRaw = DiffPresentationStyle.split.rawValue
     @AppStorage("liney.diff.zoom") private var zoomLevel: Double = 1.0
 
-    private var fileTree: [DiffFileTreeNode] {
-        DiffFileTree.build(from: state.changedFiles)
+    private var fileTree: [PathTreeNode<DiffChangedFile>] {
+        PathTree.build(
+            items: state.changedFiles,
+            path: { $0.displayPath },
+            leafID: { $0.id }
+        )
     }
 
     private var diffStyle: DiffPresentationStyle {
@@ -193,16 +197,16 @@ struct DiffWindowContentView: View {
 }
 
 private struct DiffTreeRow: View {
-    let node: DiffFileTreeNode
+    let node: PathTreeNode<DiffChangedFile>
     @Binding var collapsedFolders: Set<String>
 
     var body: some View {
-        if let file = node.file {
+        if let file = node.item {
             DiffFileRow(file: file)
                 .tag(node.id)
         } else {
             DisclosureGroup(isExpanded: expansionBinding) {
-                ForEach(node.children, id: \.id) { child in
+                ForEach(node.children) { child in
                     DiffTreeRow(node: child, collapsedFolders: $collapsedFolders)
                 }
             } label: {
@@ -214,7 +218,7 @@ private struct DiffTreeRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Text("\(fileCount(in: node))")
+                    Text("\(PathTree.leafCount(in: node))")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(LineyTheme.mutedText)
                 }
@@ -233,11 +237,6 @@ private struct DiffTreeRow: View {
                 }
             }
         )
-    }
-
-    private func fileCount(in node: DiffFileTreeNode) -> Int {
-        if node.isFile { return 1 }
-        return node.children.reduce(0) { $0 + fileCount(in: $1) }
     }
 }
 

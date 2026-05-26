@@ -46,12 +46,13 @@ jobs:
         run: |
           set -euo pipefail
           # Upstream tag refs (only annotated/lightweight that match v*)
-          UP_TAGS=$(git ls-remote --tags upstream | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
-          # Query fork's actual remote tags (NOT local — local has upstream tags from fetch).
-          OUR_TAGS=$(git ls-remote --tags origin | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
-          echo "Upstream has $(echo "$UP_TAGS" | wc -l | tr -d ' ') v-tags"
-          echo "Fork has $(echo "$OUR_TAGS" | wc -l | tr -d ' ') v-tags"
-          NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS" | sort -V))
+          UP_TAGS=$(git ls-remote --tags upstream 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | { grep -E '^v[0-9]' || true; } | sort -V)
+          OUR_TAGS=$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | { grep -E '^v[0-9]' || true; } | sort -V)
+          UP_COUNT=$( [[ -z "$UP_TAGS" ]] && echo 0 || echo "$UP_TAGS" | wc -l | tr -d ' ')
+          OUR_COUNT=$( [[ -z "$OUR_TAGS" ]] && echo 0 || echo "$OUR_TAGS" | wc -l | tr -d ' ')
+          echo "Upstream has $UP_COUNT v-tags"
+          echo "Fork has $OUR_COUNT v-tags"
+          NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS"))
           if [[ -z "$NEW" ]]; then
             echo "No new upstream tags. Exiting."
             echo "has_new=false" >> "$GITHUB_OUTPUT"

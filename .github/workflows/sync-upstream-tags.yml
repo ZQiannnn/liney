@@ -47,7 +47,10 @@ jobs:
           set -euo pipefail
           # Upstream tag refs (only annotated/lightweight that match v*)
           UP_TAGS=$(git ls-remote --tags upstream | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
-          OUR_TAGS=$(git tag -l 'v*')
+          # Query fork's actual remote tags (NOT local — local has upstream tags from fetch).
+          OUR_TAGS=$(git ls-remote --tags origin | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
+          echo "Upstream has $(echo "$UP_TAGS" | wc -l | tr -d ' ') v-tags"
+          echo "Fork has $(echo "$OUR_TAGS" | wc -l | tr -d ' ') v-tags"
           NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS" | sort -V))
           if [[ -z "$NEW" ]]; then
             echo "No new upstream tags. Exiting."

@@ -1,0 +1,99 @@
+name: Sync upstream tags
+
+on:
+  schedule:
+    # 每天 UTC 03:00 (北京 11:00) 检查一次
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (only report, do not push)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UPSTREAM: https://github.com/everettjf/liney.git
+      OUR_BRANCH: main
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream + fetch tags
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM" || git remote set-url upstream "$UPSTREAM"
+          git fetch upstream --tags --prune --no-recurse-submodules
+          echo "Upstream tags:"; git tag -l 'v*' --contains upstream/main 2>/dev/null | tail -n 20 || true
+
+      - name: Compute new upstream tags
+        id: diff
+        run: |
+          set -euo pipefail
+          # Upstream tag refs (only annotated/lightweight that match v*)
+          UP_TAGS=$(git ls-remote --tags upstream | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
+          OUR_TAGS=$(git tag -l 'v*')
+          NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS" | sort -V))
+          if [[ -z "$NEW" ]]; then
+            echo "No new upstream tags. Exiting."
+            echo "has_new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "New tags to sync:"
+          printf '  %s\n' $NEW
+          echo "has_new=true" >> "$GITHUB_OUTPUT"
+          printf '%s\n' $NEW > /tmp/new_tags.txt
+
+      - name: Merge each upstream tag into our main and re-tag
+        if: steps.diff.outputs.has_new == 'true'
+        run: |
+          set -euo pipefail
+          git checkout "$OUR_BRANCH"
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            echo "=== Syncing $tag ==="
+            # Merge the upstream tag commit (its tree state) into our main.
+            # --no-ff keeps a merge commit so our custom changes survive.
+            if ! git merge --no-ff "refs/tags/$tag" -m "sync: merge upstream $tag" --no-edit; then
+              echo "❌ Merge conflict syncing $tag. Aborting auto-sync; manual resolution needed."
+              git merge --abort || true
+              echo "::error title=Merge conflict::Cannot auto-merge upstream tag $tag. Resolve manually:"
+              echo "  git fetch upstream && git merge refs/tags/$tag"
+              exit 1
+            fi
+            git tag -a "$tag" -m "sync: $tag from upstream"
+          done < /tmp/new_tags.txt
+
+      - name: Push (unless dry run)
+        if: steps.diff.outputs.has_new == 'true' && inputs.dry_run != '1'
+        run: |
+          set -euo pipefail
+          git push origin "$OUR_BRANCH"
+          git push origin --tags
+
+      - name: Summary
+        if: always()
+        run: |
+          if [[ -f /tmp/new_tags.txt ]]; then
+            echo "### Synced tags" >> "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] && echo "- \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+            done < /tmp/new_tags.txt
+          else
+            echo "### No new upstream tags" >> "$GITHUB_STEP_SUMMARY"
+          fi

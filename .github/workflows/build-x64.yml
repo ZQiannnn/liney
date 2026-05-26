@@ -39,6 +39,15 @@ jobs:
           lipo -info "$LIB"
           lipo -info "$LIB" | grep -q "x86_64" || { echo "No x86_64 slice in GhosttyKit"; exit 1; }
 
+      - name: Patch build script to disable strict actor isolation
+        # The project pins SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor which is
+        # warnings-only on Xcode 16.0 but errors on Xcode 16.4. Override to
+        # the language default for this build.
+        run: |
+          set -euo pipefail
+          sed -i '' 's|ONLY_ACTIVE_ARCH=NO|ONLY_ACTIVE_ARCH=NO SWIFT_DEFAULT_ACTOR_ISOLATION="" SWIFT_APPROACHABLE_CONCURRENCY=NO|' scripts/build_macos_app.sh
+          grep -A2 "ONLY_ACTIVE_ARCH" scripts/build_macos_app.sh | head -5
+
       - name: Build Liney for x86_64 only
         env:
           RELEASE_ARCHS: "x86_64"

@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           git remote add upstream "$UPSTREAM" || git remote set-url upstream "$UPSTREAM"
-          git fetch upstream --tags --prune --no-recurse-submodules
+          git fetch upstream --tags --force --prune --no-recurse-submodules
           echo "Upstream tags:"; git tag -l 'v*' --contains upstream/main 2>/dev/null | tail -n 20 || true
 
       - name: Compute new upstream tags

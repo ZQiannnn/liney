@@ -17,8 +17,13 @@ struct DiffWindowContentView: View {
     @ObservedObject var state: DiffWindowState
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var listSelection: String?
+    @State private var collapsedFolders: Set<String> = []
     @AppStorage("liney.diff.viewStyle") private var diffStyleRaw = DiffPresentationStyle.split.rawValue
     @AppStorage("liney.diff.zoom") private var zoomLevel: Double = 1.0
+
+    private var fileTree: [DiffFileTreeNode] {
+        DiffFileTree.build(from: state.changedFiles)
+    }
 
     private var diffStyle: DiffPresentationStyle {
         DiffPresentationStyle(rawValue: diffStyleRaw) ?? .split
@@ -111,9 +116,8 @@ struct DiffWindowContentView: View {
 
     private var fileListSidebar: some View {
         List(selection: $listSelection) {
-            ForEach(state.changedFiles) { file in
-                DiffFileRow(file: file)
-                    .tag(file.id)
+            ForEach(fileTree, id: \.id) { node in
+                DiffTreeRow(node: node, collapsedFolders: $collapsedFolders)
             }
         }
         .listStyle(.sidebar)
@@ -188,11 +192,60 @@ struct DiffWindowContentView: View {
     }
 }
 
+private struct DiffTreeRow: View {
+    let node: DiffFileTreeNode
+    @Binding var collapsedFolders: Set<String>
+
+    var body: some View {
+        if let file = node.file {
+            DiffFileRow(file: file)
+                .tag(node.id)
+        } else {
+            DisclosureGroup(isExpanded: expansionBinding) {
+                ForEach(node.children, id: \.id) { child in
+                    DiffTreeRow(node: child, collapsedFolders: $collapsedFolders)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(LineyTheme.mutedText)
+                        .frame(width: 14)
+                    Text(node.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text("\(fileCount(in: node))")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(LineyTheme.mutedText)
+                }
+            }
+        }
+    }
+
+    private var expansionBinding: Binding<Bool> {
+        Binding(
+            get: { !collapsedFolders.contains(node.id) },
+            set: { newValue in
+                if newValue {
+                    collapsedFolders.remove(node.id)
+                } else {
+                    collapsedFolders.insert(node.id)
+                }
+            }
+        )
+    }
+
+    private func fileCount(in node: DiffFileTreeNode) -> Int {
+        if node.isFile { return 1 }
+        return node.children.reduce(0) { $0 + fileCount(in: $1) }
+    }
+}
+
 private struct DiffFileRow: View {
     let file: DiffChangedFile
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text(file.statusSymbol)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -201,6 +254,7 @@ private struct DiffFileRow: View {
 
                 Text(file.displayName)
                     .lineLimit(1)
+                    .truncationMode(.middle)
 
                 Spacer(minLength: 8)
 
@@ -212,14 +266,6 @@ private struct DiffFileRow: View {
                         .padding(.vertical, 3)
                         .background(file.status.color.opacity(0.12), in: Capsule())
                 }
-            }
-
-            if !file.directoryPath.isEmpty {
-                Text(file.directoryPath)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(LineyTheme.mutedText)
-                    .lineLimit(1)
-                    .truncationMode(.head)
             }
 
             if let oldPath = file.oldPath, let newPath = file.newPath, oldPath != newPath {

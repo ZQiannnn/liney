@@ -55,7 +55,7 @@ jobs:
           [[ -n "$OUR_TAGS" ]] && OUR_COUNT=$(echo "$OUR_TAGS" | wc -l | tr -d ' ')
           echo "Upstream has $UP_COUNT v-tags"
           echo "Fork has $OUR_COUNT v-tags"
-          NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS"))
+          NEW=$(comm -23 <(echo "$UP_TAGS" | sort) <(echo "$OUR_TAGS" | sort) | sort -V)
           if [[ -z "$NEW" ]]; then
             echo "No new upstream tags. Exiting."
             echo "has_new=false" >> "$GITHUB_OUTPUT"
@@ -66,24 +66,31 @@ jobs:
           echo "has_new=true" >> "$GITHUB_OUTPUT"
           printf '%s\n' $NEW > /tmp/new_tags.txt
 
-      - name: Merge each upstream tag into our main and re-tag
+      - name: Sync each upstream tag (tag-only for ancestors, merge for new)
         if: steps.diff.outputs.has_new == 'true'
         run: |
           set -euo pipefail
           git checkout "$OUR_BRANCH"
           while IFS= read -r tag; do
             [[ -z "$tag" ]] && continue
-            echo "=== Syncing $tag ==="
-            # Merge the upstream tag commit (its tree state) into our main.
-            # --no-ff keeps a merge commit so our custom changes survive.
-            if ! git merge --no-ff "refs/tags/$tag" -m "sync: merge upstream $tag" --no-edit; then
-              echo "❌ Merge conflict syncing $tag. Aborting auto-sync; manual resolution needed."
-              git merge --abort || true
-              echo "::error title=Merge conflict::Cannot auto-merge upstream tag $tag. Resolve manually:"
-              echo "  git fetch upstream && git merge refs/tags/$tag"
-              exit 1
+            target=$(git rev-list -n 1 "refs/tags/$tag" 2>/dev/null || echo "")
+            if [[ -z "$target" ]]; then
+              echo "⚠️  Skipping $tag — cannot resolve target commit"
+              continue
             fi
-            git tag -a "$tag" -m "sync: $tag from upstream"
+            if git merge-base --is-ancestor "$target" HEAD; then
+              # Tag's commit already in our history → just label it (no merge)
+              echo "=== Tagging $tag (ancestor: $(git rev-parse --short $target)) ==="
+              git tag -a "$tag" -m "sync: $tag from upstream" "$target"
+            else
+              echo "=== Merging $tag ==="
+              if ! git merge --no-ff "refs/tags/$tag" -m "sync: merge upstream $tag" --no-edit; then
+                echo "::error title=Merge conflict::Cannot auto-merge upstream tag $tag. Resolve manually."
+                git merge --abort || true
+                exit 1
+              fi
+              git tag -a "$tag" -m "sync: $tag from upstream"
+            fi
           done < /tmp/new_tags.txt
 
       - name: Push (unless dry run)

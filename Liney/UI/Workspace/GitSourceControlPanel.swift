@@ -6,6 +6,7 @@
 //  Pull/Push, collapsible Changes / Pull Requests / History sections.
 //
 
+import Combine
 import SwiftUI
 
 @MainActor

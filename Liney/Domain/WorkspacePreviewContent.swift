@@ -27,12 +27,45 @@ nonisolated enum WorkspacePreviewContent: Equatable, Hashable {
         case markdown
         /// An HTML document loaded directly from disk.
         case html
+        /// Plain text / source code shown in the built-in code editor.
+        case text
     }
 
     /// File extensions Liney knows how to render in the preview panel.
     /// Anything outside this set should be opened externally instead.
     static let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "mkdn", "mdx"]
     static let htmlExtensions: Set<String> = ["html", "htm", "xhtml"]
+    static let textExtensions: Set<String> = [
+        // generic text
+        "txt", "log", "rtf",
+        // source code
+        "swift", "swiftinterface",
+        "m", "mm", "h", "hpp", "c", "cc", "cpp", "cxx",
+        "py", "pyi", "rb", "go", "rs",
+        "ts", "tsx", "js", "jsx", "mjs", "cjs",
+        "java", "kt", "kts", "scala", "groovy", "gradle",
+        "sh", "bash", "zsh", "fish", "ps1",
+        "lua", "pl", "php", "r", "dart", "ex", "exs",
+        // config / data
+        "json", "jsonc", "json5",
+        "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "env",
+        "xml", "plist", "svg",
+        "sql", "graphql", "gql", "proto",
+        "csv", "tsv",
+        // build / docs
+        "dockerfile", "makefile", "cmake",
+        "gitignore", "gitattributes", "editorconfig", "lock",
+        "tex", "bib",
+        // styling (treated as text, not rendered)
+        "css", "scss", "sass", "less"
+    ]
+    /// Files with these basenames are treated as text even without a
+    /// recognizable extension (Dockerfile, Makefile, .env, etc.).
+    static let textBasenames: Set<String> = [
+        "dockerfile", "makefile", "cmakelists.txt",
+        "rakefile", "gemfile", "podfile", "fastfile",
+        "license", "licence", "readme", "changelog", "todo", "notice", "authors", "contributing"
+    ]
 
     /// Returns the render mode for a file URL, or `nil` when the file is not a
     /// type the preview panel can render.
@@ -40,6 +73,12 @@ nonisolated enum WorkspacePreviewContent: Equatable, Hashable {
         let ext = url.pathExtension.lowercased()
         if markdownExtensions.contains(ext) { return .markdown }
         if htmlExtensions.contains(ext) { return .html }
+        if textExtensions.contains(ext) { return .text }
+        let name = url.lastPathComponent.lowercased()
+        if textBasenames.contains(name) { return .text }
+        // Dotfiles without extension (.env, .gitignore already in lists above) —
+        // treat any leading-dot file with no remaining extension as text.
+        if name.hasPrefix("."), !name.dropFirst().contains(".") { return .text }
         return nil
     }
 
@@ -88,6 +127,7 @@ nonisolated enum WorkspacePreviewContent: Equatable, Hashable {
             switch fileRenderMode {
             case .markdown: return "doc.richtext"
             case .html: return "chevron.left.forwardslash.chevron.right"
+            case .text: return "doc.text"
             case .none: return "doc"
             }
         case .web:

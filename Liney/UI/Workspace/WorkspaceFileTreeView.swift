@@ -309,8 +309,16 @@ private struct FileTreeRow: View {
         .background(rowBackground)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .onTapGesture { activate() }
+        .onTapGesture(count: 2) { activate() }
+        .onTapGesture(count: 1) { primaryTap() }
         .contextMenu { contextMenu }
+    }
+
+    private func primaryTap() {
+        selectedPath = entry.url.path
+        if entry.isDirectory {
+            withAnimation(.easeInOut(duration: 0.12)) { isExpanded.toggle() }
+        }
     }
 
     @ViewBuilder
@@ -328,9 +336,16 @@ private struct FileTreeRow: View {
     }
 
     private func activate() {
+        selectedPath = entry.url.path
         if entry.isDirectory {
-            withAnimation(.easeInOut(duration: 0.12)) { isExpanded.toggle() }
-            selectedPath = entry.url.path
+            // Single tap already toggles directory expansion; double tap just
+            // ensures the directory is open (avoids the "double-tap toggles
+            // twice" flicker since SwiftUI dispatches only the count=2 handler
+            // on a real double tap, but we still want the gesture to be a
+            // no-op when the directory is already open).
+            if !isExpanded {
+                withAnimation(.easeInOut(duration: 0.12)) { isExpanded = true }
+            }
         } else {
             onOpen(entry)
         }

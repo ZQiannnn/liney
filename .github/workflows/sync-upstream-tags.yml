@@ -44,12 +44,15 @@ jobs:
       - name: Compute new upstream tags
         id: diff
         run: |
-          set -euo pipefail
-          # Upstream tag refs (only annotated/lightweight that match v*)
-          UP_TAGS=$(git ls-remote --tags upstream 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | { grep -E '^v[0-9]' || true; } | sort -V)
-          OUR_TAGS=$(git ls-remote --tags origin 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||' | grep -vE '\^\{\}$' | { grep -E '^v[0-9]' || true; } | sort -V)
-          UP_COUNT=$( [[ -z "$UP_TAGS" ]] && echo 0 || echo "$UP_TAGS" | wc -l | tr -d ' ')
-          OUR_COUNT=$( [[ -z "$OUR_TAGS" ]] && echo 0 || echo "$OUR_TAGS" | wc -l | tr -d ' ')
+          set +e  # grep returns 1 when no match; tolerate that
+          UP_RAW=$(git ls-remote --tags upstream 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||')
+          OUR_RAW=$(git ls-remote --tags origin   2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||')
+          UP_TAGS=$(echo "$UP_RAW"  | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
+          OUR_TAGS=$(echo "$OUR_RAW" | grep -vE '\^\{\}$' | grep -E '^v[0-9]' | sort -V)
+          set -eo pipefail
+          UP_COUNT=0; OUR_COUNT=0
+          [[ -n "$UP_TAGS"  ]] && UP_COUNT=$(echo  "$UP_TAGS"  | wc -l | tr -d ' ')
+          [[ -n "$OUR_TAGS" ]] && OUR_COUNT=$(echo "$OUR_TAGS" | wc -l | tr -d ' ')
           echo "Upstream has $UP_COUNT v-tags"
           echo "Fork has $OUR_COUNT v-tags"
           NEW=$(comm -23 <(echo "$UP_TAGS") <(echo "$OUR_TAGS"))

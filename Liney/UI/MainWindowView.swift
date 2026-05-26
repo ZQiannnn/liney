@@ -9,10 +9,19 @@ import AppKit
 import ObjectiveC
 import SwiftUI
 
+enum MainRightPanelMode: String, CaseIterable {
+    case none
+    case diff
+    case history
+}
+
 struct MainWindowView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @ObservedObject private var localization = LocalizationManager.shared
     @State private var isCanvasPresented = false
+    @State private var rightPanelMode: MainRightPanelMode = .none
+    @StateObject private var inlineDiffState = DiffWindowState()
+    @StateObject private var inlineHistoryState = HistoryWindowState()
 
     private func localized(_ key: String) -> String {
         localization.string(key)
@@ -184,7 +193,7 @@ struct MainWindowView: View {
                 if isCanvasPresented {
                     Color.clear
                 } else {
-                    WorkspaceDetailView()
+                    detailWithRightPanel
                 }
             }
             .navigationSplitViewStyle(.balanced)
@@ -400,20 +409,22 @@ struct MainWindowView: View {
                 .help(isCanvasPresented ? localized("main.canvas.hide") : localized("main.canvas.show"))
 
                 Button {
-                    openDiffWindow()
+                    toggleRightPanel(.diff)
                 } label: {
-                    Image(systemName: "doc.text.magnifyingglass")
+                    Image(systemName: rightPanelMode == .diff ? "doc.text.magnifyingglass" : "doc.text.magnifyingglass")
                         .padding(4 * uiScale)
+                        .foregroundStyle(rightPanelMode == .diff ? Color.accentColor : .primary)
                 }
                 .scaleEffect(uiScale)
                 .accessibilityLabel(localized("menu.view.openDiff"))
                 .help(localized("menu.view.openDiff"))
 
                 Button {
-                    openHistoryWindow()
+                    toggleRightPanel(.history)
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                         .padding(4 * uiScale)
+                        .foregroundStyle(rightPanelMode == .history ? Color.accentColor : .primary)
                 }
                 .scaleEffect(uiScale)
                 .accessibilityLabel(localized("menu.view.openHistory"))
@@ -748,6 +759,98 @@ struct MainWindowView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: store.statusMessage?.id)
         .animation(.easeInOut(duration: 0.18), value: store.isCommandPalettePresented)
+        .onChange(of: store.selectedWorkspace?.id) { _, _ in
+            loadRightPanelStateIfNeeded()
+        }
+        .onChange(of: store.selectedWorkspace?.activeWorktreePath) { _, _ in
+            loadRightPanelStateIfNeeded()
+        }
+    }
+
+    @ViewBuilder
+    private var detailWithRightPanel: some View {
+        if rightPanelMode == .none {
+            WorkspaceDetailView()
+        } else {
+            HSplitView {
+                WorkspaceDetailView()
+                    .frame(minWidth: 300)
+                rightPanelContent
+                    .frame(minWidth: 360, idealWidth: 520, maxWidth: .infinity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rightPanelContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Text(rightPanelMode == .diff ? "Changes" : "History")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.leading, 8)
+                Spacer()
+                Button {
+                    inlineHistoryState.refresh()
+                    inlineDiffState.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+                Button {
+                    rightPanelMode = .none
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("Close panel")
+                .padding(.trailing, 8)
+            }
+            .frame(height: 28)
+            .background(LineyTheme.chromeBackground)
+            Divider()
+            switch rightPanelMode {
+            case .diff:
+                DiffWindowContentView(state: inlineDiffState)
+            case .history:
+                HistoryWindowContentView(state: inlineHistoryState)
+            case .none:
+                EmptyView()
+            }
+        }
+        .background(LineyTheme.appBackground)
+    }
+
+    private func toggleRightPanel(_ mode: MainRightPanelMode) {
+        if rightPanelMode == mode {
+            rightPanelMode = .none
+            return
+        }
+        rightPanelMode = mode
+        loadRightPanelStateIfNeeded()
+    }
+
+    private func loadRightPanelStateIfNeeded() {
+        let workspace = store.selectedWorkspace
+        let supports = workspace?.supportsRepositoryFeatures == true
+        let path = supports ? workspace?.activeWorktreePath : nil
+        let branch = workspace?.activeWorktree?.branchLabel ?? workspace?.currentBranch ?? ""
+        switch rightPanelMode {
+        case .diff:
+            inlineDiffState.load(
+                worktreePath: path,
+                branchName: branch,
+                emptyStateMessage: diffEmptyStateMessage(for: workspace, supportsDiff: supports)
+            )
+        case .history:
+            inlineHistoryState.load(
+                worktreePath: path,
+                branchName: branch,
+                emptyStateMessage: historyEmptyStateMessage(for: workspace, supportsHistory: supports)
+            )
+        case .none:
+            break
+        }
     }
 
     private func openDiffWindow() {

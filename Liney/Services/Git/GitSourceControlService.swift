@@ -182,6 +182,77 @@ actor GitSourceControlService {
         try Self.requireOK(r, "git checkout")
     }
 
+    // MARK: - File stats (working-tree numstat)
+
+    /// Returns map of path → (insertions, deletions) for working-tree changes
+    /// (unstaged) and HEAD-vs-staged combined.
+    func numstat(in cwd: String) async throws -> [String: (Int, Int)] {
+        async let workingTree: ShellCommandResult = git(["diff", "--numstat"], cwd: cwd)
+        async let staged: ShellCommandResult = git(["diff", "--cached", "--numstat"], cwd: cwd)
+        let wt = try await workingTree
+        let st = try await staged
+        var map: [String: (Int, Int)] = [:]
+        for raw in [wt.stdout, st.stdout] {
+            for line in raw.split(separator: "\n") {
+                let parts = line.split(separator: "\t")
+                guard parts.count >= 3 else { continue }
+                let ins = Int(parts[0]) ?? 0
+                let del = Int(parts[1]) ?? 0
+                let path = String(parts[2])
+                let prev = map[path] ?? (0, 0)
+                map[path] = (prev.0 + ins, prev.1 + del)
+            }
+        }
+        return map
+    }
+
+    /// Unified diff patch for a single path (working tree + staged combined).
+    func diffPatch(for path: String, in cwd: String) async throws -> String {
+        let wt = try await git(["diff", "--", path], cwd: cwd)
+        let st = try await git(["diff", "--cached", "--", path], cwd: cwd)
+        var out = ""
+        if !st.stdout.isEmpty {
+            out += "# staged\n" + st.stdout
+        }
+        if !wt.stdout.isEmpty {
+            if !out.isEmpty { out += "\n" }
+            out += "# unstaged\n" + wt.stdout
+        }
+        if out.isEmpty {
+            // untracked: dump file contents as if new
+            let cat = try await git(["status", "--porcelain", "--", path], cwd: cwd)
+            if cat.stdout.hasPrefix("??") {
+                let runner2 = ShellCommandRunner()
+                let r = try await runner2.run(
+                    executable: "/usr/bin/env",
+                    arguments: ["cat", path],
+                    currentDirectory: cwd
+                )
+                out = "# untracked (new file)\n" + r.stdout
+            }
+        }
+        return out
+    }
+
+    /// Map of commit hash → list of refnames (branches/tags) pointing to it.
+    func refsMap(in cwd: String) async throws -> [String: [String]] {
+        let r = try await git(["show-ref", "--head"], cwd: cwd)
+        guard r.exitCode == 0 else { return [:] }
+        var map: [String: [String]] = [:]
+        for line in r.stdout.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let hash = String(parts[0])
+            var ref = String(parts[1])
+            if ref == "HEAD" { /* keep */ }
+            else if ref.hasPrefix("refs/heads/") { ref = String(ref.dropFirst("refs/heads/".count)) }
+            else if ref.hasPrefix("refs/remotes/") { ref = String(ref.dropFirst("refs/remotes/".count)) }
+            else if ref.hasPrefix("refs/tags/") { ref = "tag:" + String(ref.dropFirst("refs/tags/".count)) }
+            map[hash, default: []].append(ref)
+        }
+        return map
+    }
+
     // MARK: - Ahead / Behind
 
     struct AheadBehind: Sendable { let ahead: Int; let behind: Int }

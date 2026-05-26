@@ -81,7 +81,7 @@ jobs:
             if git merge-base --is-ancestor "$target" HEAD; then
               # Tag's commit already in our history → just label it (no merge)
               echo "=== Tagging $tag (ancestor: $(git rev-parse --short $target)) ==="
-              git tag -a "$tag" -m "sync: $tag from upstream" "$target"
+              git tag -af "$tag" -m "sync: $tag from upstream" "$target"
             else
               echo "=== Merging $tag ==="
               if ! git merge --no-ff "refs/tags/$tag" -m "sync: merge upstream $tag" --no-edit; then
@@ -89,7 +89,7 @@ jobs:
                 git merge --abort || true
                 exit 1
               fi
-              git tag -a "$tag" -m "sync: $tag from upstream"
+              git tag -af "$tag" -m "sync: $tag from upstream"
             fi
           done < /tmp/new_tags.txt
 

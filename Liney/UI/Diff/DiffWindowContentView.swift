@@ -8,7 +8,7 @@
 import SwiftUI
 import YiTong
 
-private enum DiffPresentationStyle: String {
+enum DiffPresentationStyle: String {
     case split
     case unified
 }
@@ -269,7 +269,7 @@ private struct DiffDocumentHeader: View {
     }
 }
 
-private struct DiffYiTongDocumentView: View {
+struct DiffYiTongDocumentView: View {
     let document: DiffFileDocument
     let diffStyle: DiffPresentationStyle
 

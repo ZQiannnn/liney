@@ -760,11 +760,20 @@ struct MainWindowView: View {
             WorkspaceDetailView()
         } else {
             HSplitView {
-                WorkspaceDetailView()
+                centerContent
                     .frame(minWidth: 300)
                 GitSourceControlPanel(vm: scVM)
                     .frame(minWidth: 320, idealWidth: 380, maxWidth: 600)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var centerContent: some View {
+        if scVM.centerDoc != nil || scVM.centerDocLoading {
+            CenterDiffOverlay(vm: scVM)
+        } else {
+            WorkspaceDetailView()
         }
     }
 

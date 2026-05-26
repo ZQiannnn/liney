@@ -13,14 +13,12 @@ import SwiftUI
 enum SourceControlTab: Hashable {
     case changes
     case history
-    case fileDiff(path: String)
     case commitDetail(hash: String, shortHash: String, subject: String)
 
     var title: String {
         switch self {
         case .changes: return "Changes"
         case .history: return "History"
-        case .fileDiff(let p): return (p as NSString).lastPathComponent
         case .commitDetail(_, let s, _): return s
         }
     }
@@ -28,7 +26,6 @@ enum SourceControlTab: Hashable {
         switch self {
         case .changes: return "list.bullet.indent"
         case .history: return "clock.arrow.circlepath"
-        case .fileDiff: return "doc.text.magnifyingglass"
         case .commitDetail: return "scroll"
         }
     }
@@ -58,19 +55,19 @@ final class GitSourceControlViewModel: ObservableObject {
     @Published var openTabs: [SourceControlTab] = [.changes, .history]
     @Published var activeTab: SourceControlTab = .changes
 
-    /// Cache of working-tree per-file patches (raw text).
-    @Published var patchCache: [String: String] = [:]
     /// Cache of commit details (file list).
     @Published var commitFiles: [String: [DiffChangedFile]] = [:]
     /// Selected file per commit-detail tab.
     @Published var commitSelectedFile: [String: String] = [:]
-    /// Per-(commit,file) patch cache.
-    @Published var commitFilePatch: [String: String] = [:]
+
+    // Center pane diff (replaces terminal when active)
+    @Published var centerDoc: DiffFileDocument?
+    @Published var centerDocLoading: Bool = false
+    @Published var centerSubject: String?
 
     let historyState = HistoryWindowState()
     private let svc = GitSourceControlService()
     private let repoSvc = GitRepositoryService()
-    private var patchTasks: [String: Task<Void, Never>] = [:]
 
     var uniqueChanges: [GitStatusEntry] {
         var seenPath = Set<String>()
@@ -86,12 +83,10 @@ final class GitSourceControlViewModel: ObservableObject {
         self.worktreePath = worktreePath
         self.currentBranch = branchName
         self.selectedHistoryCommitID = nil
-        // Clear caches scoped to old workspace
-        patchCache = [:]
         commitFiles = [:]
         commitSelectedFile = [:]
-        commitFilePatch = [:]
-        // Drop non-pinned tabs (Changes/History stay)
+        centerDoc = nil
+        centerSubject = nil
         openTabs = openTabs.filter { !$0.isClosable }
         if !openTabs.contains(activeTab) { activeTab = .changes }
         historyState.load(
@@ -121,21 +116,12 @@ final class GitSourceControlViewModel: ObservableObject {
             self.currentBranch = (try? await cur) ?? self.currentBranch
             self.fileStats = (try? await ns) ?? [:]
             self.refsMap = (try? await rm) ?? [:]
-            // Bust working-tree patch cache (working-tree may have changed)
-            patchCache = [:]
         } catch {
             self.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     // MARK: Tabs
-
-    func openFileDiffTab(_ path: String) {
-        let tab = SourceControlTab.fileDiff(path: path)
-        if !openTabs.contains(tab) { openTabs.append(tab) }
-        activeTab = tab
-        loadPatchIfNeeded(path)
-    }
 
     func openCommitTab(_ commit: GitHistoryCommit) {
         let tab = SourceControlTab.commitDetail(hash: commit.hash, shortHash: commit.shortHash, subject: commit.subject)
@@ -153,19 +139,6 @@ final class GitSourceControlViewModel: ObservableObject {
 
     // MARK: Loaders
 
-    func loadPatchIfNeeded(_ path: String) {
-        guard let cwd = worktreePath, patchCache[path] == nil else { return }
-        patchTasks[path]?.cancel()
-        patchTasks[path] = Task { @MainActor in
-            do {
-                let p = try await self.svc.diffPatch(for: path, in: cwd)
-                self.patchCache[path] = p.isEmpty ? "(no diff)" : p
-            } catch {
-                self.patchCache[path] = "Error: \(error.localizedDescription)"
-            }
-        }
-    }
-
     func loadCommitFilesIfNeeded(_ hash: String) {
         guard let cwd = worktreePath, commitFiles[hash] == nil else { return }
         Task { @MainActor in
@@ -175,7 +148,6 @@ final class GitSourceControlViewModel: ObservableObject {
                 )
                 self.commitFiles[hash] = DiffChangedFile.parseNameStatus(raw)
             } catch {
-                // First commit has no parent — diff against empty tree
                 if let r2 = try? await self.repoSvc.diffNameStatusBetweenCommits(
                     for: cwd, fromCommit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", toCommit: hash
                 ) {
@@ -187,19 +159,58 @@ final class GitSourceControlViewModel: ObservableObject {
         }
     }
 
-    func loadCommitFilePatchIfNeeded(commit: String, path: String) {
-        let key = commit + "\u{0000}" + path
-        guard let cwd = worktreePath, commitFilePatch[key] == nil else { return }
+    // MARK: Center diff
+
+    /// Show working-tree file diff in the center pane.
+    func showCenterDiff(workingFile path: String, status: DiffFileStatus = .modified) {
+        guard let cwd = worktreePath else { return }
+        centerSubject = path
+        centerDocLoading = true
+        centerDoc = nil
         Task { @MainActor in
             do {
-                let p = try await self.repoSvc.diffPatchBetweenCommits(
+                let patch = try await self.svc.diffPatch(for: path, in: cwd)
+                let file = DiffChangedFile(status: status, oldPath: path, newPath: path)
+                self.centerDoc = DiffFileDocument(file: file, unifiedPatch: patch.isEmpty ? "" : patch)
+            } catch {
+                let file = DiffChangedFile(status: status, oldPath: path, newPath: path)
+                self.centerDoc = DiffFileDocument(file: file, unifiedPatch: "Error: \(error.localizedDescription)")
+            }
+            self.centerDocLoading = false
+        }
+    }
+
+    /// Show one file diff from a specific commit (vs its parent) in the center pane.
+    func showCenterDiff(commit: String, file: DiffChangedFile) {
+        guard let cwd = worktreePath else { return }
+        let path = file.newPath ?? file.oldPath ?? ""
+        centerSubject = "\(String(commit.prefix(7))) · \(path)"
+        centerDocLoading = true
+        centerDoc = nil
+        Task { @MainActor in
+            do {
+                let patch = try await self.repoSvc.diffPatchBetweenCommits(
                     for: cwd, filePath: path, fromCommit: "\(commit)^", toCommit: commit
                 )
-                self.commitFilePatch[key] = p.isEmpty ? "(no diff)" : p
+                self.centerDoc = DiffFileDocument(file: file, unifiedPatch: patch)
             } catch {
-                self.commitFilePatch[key] = "Error: \(error.localizedDescription)"
+                // First commit no parent — diff vs empty tree
+                if let patch = try? await self.repoSvc.diffPatchBetweenCommits(
+                    for: cwd, filePath: path, fromCommit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", toCommit: commit
+                ) {
+                    self.centerDoc = DiffFileDocument(file: file, unifiedPatch: patch)
+                } else {
+                    self.centerDoc = DiffFileDocument(file: file, unifiedPatch: "Error: \(error.localizedDescription)")
+                }
             }
+            self.centerDocLoading = false
         }
+    }
+
+    func clearCenterDiff() {
+        centerDoc = nil
+        centerSubject = nil
+        centerDocLoading = false
     }
 
     // MARK: Git ops
@@ -403,8 +414,6 @@ struct GitSourceControlPanel: View {
             ChangesTabContent(vm: vm)
         case .history:
             HistoryTabContent(vm: vm)
-        case .fileDiff(let path):
-            FileDiffTabContent(path: path, vm: vm)
         case .commitDetail(let hash, _, _):
             CommitDetailTabContent(commitHash: hash, vm: vm)
         }
@@ -514,7 +523,16 @@ private struct ChangeRow: View {
         .contentShape(Rectangle())
         .background(hovering ? Color.gray.opacity(0.10) : Color.clear)
         .onHover { hovering = $0 }
-        .onTapGesture { vm.openFileDiffTab(entry.path) }
+        .onTapGesture {
+            let s: DiffFileStatus
+            switch entry.displayCode {
+            case "A", "U": s = .added
+            case "D": s = .deleted
+            case "R": s = .renamed
+            default: s = .modified
+            }
+            vm.showCenterDiff(workingFile: entry.path, status: s)
+        }
     }
 
     private var statusColor: Color {
@@ -620,27 +638,7 @@ private struct RefChip: View {
     }
 }
 
-// MARK: - File diff tab content (working tree file)
-
-private struct FileDiffTabContent: View {
-    let path: String
-    @ObservedObject var vm: GitSourceControlViewModel
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer()
-            }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(LineyTheme.chromeBackground.opacity(0.5))
-            DiffPatchView(patch: vm.patchCache[path])
-                .onAppear { vm.loadPatchIfNeeded(path) }
-        }
-    }
-}
-
-// MARK: - Commit detail tab content
+// MARK: - Commit detail tab content (file list only; diff goes to center)
 
 private struct CommitDetailTabContent: View {
     let commitHash: String
@@ -650,39 +648,26 @@ private struct CommitDetailTabContent: View {
     private var selectedFile: String? { vm.commitSelectedFile[commitHash] }
 
     var body: some View {
-        VSplitView {
-            // Top: file list
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if files.isEmpty && vm.commitFiles[commitHash] == nil {
-                        HStack { ProgressView().controlSize(.small); Spacer() }
-                            .padding(10)
-                    } else if files.isEmpty {
-                        Text("No file changes in this commit.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
-                    } else {
-                        ForEach(files) { file in
-                            CommitFileRow(
-                                file: file,
-                                isSelected: selectedFile == file.id
-                            )
-                            .onTapGesture {
-                                vm.commitSelectedFile[commitHash] = file.id
-                                vm.loadCommitFilePatchIfNeeded(commit: commitHash, path: file.newPath ?? file.oldPath ?? "")
-                            }
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if files.isEmpty && vm.commitFiles[commitHash] == nil {
+                    HStack { ProgressView().controlSize(.small); Spacer() }
+                        .padding(10)
+                } else if files.isEmpty {
+                    Text("No file changes in this commit.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).padding(10)
+                } else {
+                    ForEach(files) { file in
+                        CommitFileRow(
+                            file: file,
+                            isSelected: selectedFile == file.id
+                        )
+                        .onTapGesture {
+                            vm.commitSelectedFile[commitHash] = file.id
+                            vm.showCenterDiff(commit: commitHash, file: file)
                         }
                     }
                 }
-            }
-            .frame(minHeight: 100, idealHeight: 150)
-            // Bottom: diff
-            if let sel = selectedFile, let f = files.first(where: { $0.id == sel }) {
-                let key = commitHash + "\u{0000}" + (f.newPath ?? f.oldPath ?? "")
-                DiffPatchView(patch: vm.commitFilePatch[key])
-            } else {
-                ContentUnavailableView("Select a file", systemImage: "doc.text",
-                                       description: Text("Pick a file above to view its diff."))
-                    .frame(minHeight: 80)
             }
         }
         .onAppear { vm.loadCommitFilesIfNeeded(commitHash) }
@@ -707,39 +692,39 @@ private struct CommitFileRow: View {
     }
 }
 
-// MARK: - Patch renderer
+// MARK: - Center diff overlay (used by MainWindowView)
 
-private struct DiffPatchView: View {
-    let patch: String?
+struct CenterDiffOverlay: View {
+    @ObservedObject var vm: GitSourceControlViewModel
+
     var body: some View {
-        if let patch {
-            ScrollView([.horizontal, .vertical]) {
-                Text(makeAttributed(patch))
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass").font(.system(size: 11))
+                Text(vm.centerSubject ?? "")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button { vm.clearCenterDiff() } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                }
+                .buttonStyle(.plain)
+                .help("Close diff (back to terminal)")
             }
-        } else {
-            HStack { ProgressView().controlSize(.small); Text("Loading diff…").font(.system(size: 10)).foregroundStyle(.secondary) }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-    private func makeAttributed(_ patch: String) -> AttributedString {
-        var result = AttributedString()
-        for raw in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            var seg = AttributedString(line + "\n")
-            if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("@@") || line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("# ") {
-                seg.foregroundColor = .secondary
-            } else if line.hasPrefix("+") {
-                seg.foregroundColor = .green
-            } else if line.hasPrefix("-") {
-                seg.foregroundColor = .red
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(LineyTheme.chromeBackground)
+            Divider()
+            if vm.centerDocLoading {
+                ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let doc = vm.centerDoc {
+                DiffYiTongDocumentView(document: doc, diffStyle: .split)
+            } else {
+                ContentUnavailableView("No diff", systemImage: "doc.text",
+                                       description: Text("Click a file in Source Control."))
             }
-            result.append(seg)
         }
-        return result
+        .background(LineyTheme.appBackground)
     }
 }
 

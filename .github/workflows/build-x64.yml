@@ -20,19 +20,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Select Xcode (prefer 16.0–16.2, fall back to latest 16)
+      - name: Select Xcode 26 (Swift 6.2 needed for default actor isolation)
         run: |
           set -euo pipefail
           ls /Applications/ | grep -i Xcode || true
-          XCODE_APP=""
-          for v in 16.0 16.1 16.2; do
-            CAND=$(ls -d /Applications/Xcode_${v}*.app 2>/dev/null | head -n 1)
-            if [[ -n "$CAND" ]]; then XCODE_APP="$CAND"; break; fi
-          done
-          if [[ -z "$XCODE_APP" ]]; then
-            XCODE_APP=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | head -n 1)
-          fi
-          [[ -z "$XCODE_APP" ]] && XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          # Liney uses SE-0466 (default actor isolation), which requires Swift 6.2 / Xcode 26+
+          XCODE_APP=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          [[ -z "$XCODE_APP" ]] && { echo "No Xcode 26 found"; exit 1; }
           echo "Using $XCODE_APP"
           echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
           xcodebuild -version

@@ -13,3 +13,5 @@ DerivedData/
 Liney.xcodeproj/project.xcworkspace/xcuserdata/
 Liney.xcodeproj/xcuserdata/
 website/
+.claude_permission.log
+**/.claude_permission.log

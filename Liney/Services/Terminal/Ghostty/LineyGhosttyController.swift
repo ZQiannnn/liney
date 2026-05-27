@@ -729,6 +729,19 @@ private final class LineyGhosttySurfaceView: NSView {
             layer.contentsScale = scale
         }
 
+        // Skip resize when the view is detached or has a degenerate frame —
+        // this happens transiently during window occlusion, tab switches and
+        // intermediate layout passes. Pushing a tiny size into libghostty
+        // would trigger a destructive rewrap of the scrollback (existing
+        // lines get truncated/joined) that cannot be undone when bounds
+        // return to their real value, producing the "content gets narrow,
+        // new output is fine" artifact users see after Cmd+Tab.
+        guard window != nil,
+              !isHiddenOrHasHiddenAncestor,
+              bounds.width >= 1, bounds.height >= 1 else {
+            return
+        }
+
         let backingBounds = convertToBacking(bounds)
         let width = max(Int(backingBounds.width.rounded()), 1)
         let height = max(Int(backingBounds.height.rounded()), 1)

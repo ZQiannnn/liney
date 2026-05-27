@@ -59,7 +59,7 @@ private struct FileTreeContent: View {
     let rootPath: String
 
     @State private var selectedPath: String?
-    @State private var showsHidden = false
+    @State private var showsHidden = true
     @State private var reloadToken = UUID()
     @State private var rootEntries: [DirectoryTreeEntry] = []
     @State private var isLoaded = false

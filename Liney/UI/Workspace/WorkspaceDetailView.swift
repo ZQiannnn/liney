@@ -77,10 +77,25 @@ private struct WorkspaceSessionDetailView: View {
 
     @ViewBuilder
     private var centerColumn: some View {
-        if scVM.activeEditorURL != nil {
-            CenterEditorOverlay(vm: scVM)
-        } else if scVM.centerDoc != nil || scVM.centerDocLoading {
+        if scVM.centerDoc != nil || scVM.centerDocLoading {
+            // Diff still takes the whole center — it's meant to be looked at
+            // full-width and is dismissed explicitly.
             CenterDiffOverlay(vm: scVM)
+        } else if scVM.activeEditorURL != nil {
+            if scVM.editorMaximized {
+                CenterEditorOverlay(vm: scVM)
+            } else {
+                // Native HSplitView (NSSplitView under the hood) gives smooth
+                // drag-resize for free. Toggling maximize remounts and the
+                // divider lands at the default position — that's the trade-off
+                // for native smoothness.
+                HSplitView {
+                    terminalContent
+                        .frame(minWidth: 240)
+                    CenterEditorOverlay(vm: scVM)
+                        .frame(minWidth: 240)
+                }
+            }
         } else {
             terminalContent
         }

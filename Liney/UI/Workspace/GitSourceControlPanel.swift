@@ -75,6 +75,9 @@ final class GitSourceControlViewModel: ObservableObject {
     /// survive jumping between tabs.
     @Published var openEditors: [URL] = []
     @Published var activeEditorURL: URL?
+    /// When true the editor takes the full center column instead of sharing
+    /// it with the terminal via HSplitView. Reset when all tabs close.
+    @Published var editorMaximized: Bool = false
     private var editorStates: [URL: CodeEditorState] = [:]
 
     /// Latest live instance — read from `closeFocusedPaneOrTab` so Cmd+W can
@@ -123,6 +126,7 @@ final class GitSourceControlViewModel: ObservableObject {
                 activeEditorURL = openEditors.last
             }
         }
+        if openEditors.isEmpty { editorMaximized = false }
     }
 
     func activateEditorTab(_ url: URL) {
@@ -143,10 +147,17 @@ final class GitSourceControlViewModel: ObservableObject {
         }
     }
 
+    /// Dismisses the editor overlay entirely (all tabs gone, center column
+    /// reverts to terminal).
+    func closeEditorOverlay() {
+        closeAllEditorTabs()
+    }
+
     private func closeAllEditorTabs() {
         openEditors.removeAll()
         editorStates.removeAll()
         activeEditorURL = nil
+        editorMaximized = false
     }
 
     func clearCenterOverlay() {
@@ -972,22 +983,53 @@ private struct EditorTabBar: View {
     @ObservedObject var vm: GitSourceControlViewModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 1) {
-                ForEach(vm.openEditors, id: \.self) { url in
-                    EditorTabItem(
-                        url: url,
-                        isActive: vm.activeEditorURL == url,
-                        isDirty: vm.editorState(for: url)?.isDirty ?? false,
-                        onActivate: { vm.activateEditorTab(url) },
-                        onClose: { vm.closeEditorTab(url) }
-                    )
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 1) {
+                    ForEach(vm.openEditors, id: \.self) { url in
+                        EditorTabItem(
+                            url: url,
+                            isActive: vm.activeEditorURL == url,
+                            isDirty: vm.editorState(for: url)?.isDirty ?? false,
+                            onActivate: { vm.activateEditorTab(url) },
+                            onClose: { vm.closeEditorTab(url) }
+                        )
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+            }
+
+            // Maximize / restore. Toggles the HSplitView in centerColumn —
+            // when terminals are split (e.g. 三分), they restore to whatever
+            // layout `workspace.layout` already holds.
+            trailingButton(
+                symbol: vm.editorMaximized
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right",
+                help: vm.editorMaximized ? "Restore split" : "Maximize editor"
+            ) {
+                vm.editorMaximized.toggle()
+            }
+
+            // Close: dismiss the whole editor overlay (closes all open tabs).
+            trailingButton(symbol: "xmark", help: "Close editor") {
+                vm.closeEditorOverlay()
             }
         }
         .frame(height: 30)
         .background(LineyTheme.chromeBackground)
+    }
+
+    private func trailingButton(symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 28, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(LineyTheme.secondaryText)
+        .help(help)
     }
 }
 

@@ -102,6 +102,8 @@ struct WorkspaceCodeEditorView: View {
                 .keyboardShortcut("f", modifiers: .command)
             Button("") { state.showReplace() }
                 .keyboardShortcut("f", modifiers: [.command, .option])
+            Button("") { state.showReplace() }
+                .keyboardShortcut("r", modifiers: .command)
             Button("") { state.nextMatch() }
                 .keyboardShortcut("g", modifiers: .command)
                 .disabled(!state.isFindBarVisible)
@@ -338,8 +340,13 @@ final class CodeEditorState: ObservableObject {
 
     /// Highlightr language identifier inferred from the file extension /
     /// basename, or `nil` when no syntax mode applies (plain text).
+    /// Markdown is intentionally returned as `nil` for the source view —
+    /// highlight.js's markdown grammar is recursive over nested code fences
+    /// and inline patterns and blocks the main thread on real documents; the
+    /// rendered preview is the canonical "rich" view for .md anyway.
     var languageHint: String? {
-        SyntaxLanguage.identifier(for: url)
+        if isMarkdown { return nil }
+        return SyntaxLanguage.identifier(for: url)
     }
 
     init(url: URL) {
@@ -713,7 +720,7 @@ private struct CodeTextView: NSViewRepresentable {
         textContainer.lineFragmentPadding = 0
         layoutManager.addTextContainer(textContainer)
 
-        let textView = NSTextView(frame: .zero, textContainer: textContainer)
+        let textView = GutteredTextView(frame: .zero, textContainer: textContainer)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -725,8 +732,10 @@ private struct CodeTextView: NSViewRepresentable {
         textView.allowsUndo = true
         textView.isRichText = false
         textView.usesFontPanel = false
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        // NSTextView's built-in find bar would swallow Cmd+F before SwiftUI's
+        // keyboardShortcut hidden Button can claim it; we render our own bar.
+        textView.usesFindBar = false
+        textView.isIncrementalSearchingEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -735,7 +744,8 @@ private struct CodeTextView: NSViewRepresentable {
         textView.smartInsertDeleteEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 12)
+        // Left inset = gutter width + visual padding before glyphs.
+        textView.textContainerInset = NSSize(width: GutteredTextView.gutterWidth + 6, height: 12)
         textView.insertionPointColor = Self.foregroundFill
         textView.selectedTextAttributes = [
             .backgroundColor: NSColor.systemBlue.withAlphaComponent(0.35)
@@ -754,27 +764,6 @@ private struct CodeTextView: NSViewRepresentable {
         scrollView.backgroundColor = Self.backgroundFill
         scrollView.documentView = textView
 
-        // Install line-number ruler.
-        scrollView.hasVerticalRuler = true
-        scrollView.rulersVisible = true
-        let ruler = LineNumberRulerView(textView: textView)
-        scrollView.verticalRulerView = ruler
-        context.coordinator.ruler = ruler
-        // Keep the ruler in sync with edits/scrolls.
-        NotificationCenter.default.addObserver(
-            ruler,
-            selector: #selector(LineNumberRulerView.handleTextDidChange(_:)),
-            name: NSText.didChangeNotification,
-            object: textView
-        )
-        NotificationCenter.default.addObserver(
-            ruler,
-            selector: #selector(LineNumberRulerView.handleBoundsDidChange(_:)),
-            name: NSView.boundsDidChangeNotification,
-            object: scrollView.contentView
-        )
-        scrollView.contentView.postsBoundsChangedNotifications = true
-
         controller.textView = textView
 
         return scrollView
@@ -790,7 +779,6 @@ private struct CodeTextView: NSViewRepresentable {
             let ranges = textView.selectedRanges
             textView.string = text
             textView.selectedRanges = ranges
-            context.coordinator.ruler?.needsDisplay = true
         }
         textView.isEditable = isEditable
         applyMatchHighlights(textView)
@@ -799,9 +787,18 @@ private struct CodeTextView: NSViewRepresentable {
     private func applyMatchHighlights(_ tv: NSTextView) {
         guard let lm = tv.layoutManager else { return }
         let fullLen = (tv.string as NSString).length
+        // Skip the no-op clear when there's nothing to clear — touching the
+        // layout manager during the initial pass (before glyph layout has
+        // finished) can defer the first draw.
+        if matches.isEmpty {
+            if fullLen > 0,
+               lm.temporaryAttribute(.backgroundColor, atCharacterIndex: 0, effectiveRange: nil) != nil {
+                lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: fullLen))
+            }
+            return
+        }
         let fullRange = NSRange(location: 0, length: fullLen)
         lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
-        if matches.isEmpty { return }
         let matchColor = NSColor.systemYellow.withAlphaComponent(0.30)
         let currentColor = NSColor.systemOrange.withAlphaComponent(0.55)
         for (idx, range) in matches.enumerated() {
@@ -826,98 +823,95 @@ private struct CodeTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodeTextView
-        weak var ruler: LineNumberRulerView?
         init(_ parent: CodeTextView) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
-            ruler?.needsDisplay = true
+            (tv as? GutteredTextView)?.invalidateGutter()
         }
     }
 }
 
-// MARK: - Line number ruler
-
-final class LineNumberRulerView: NSRulerView {
-    static let backgroundFill = NSColor(red: 0.085, green: 0.095, blue: 0.115, alpha: 1)
+// MARK: - Line-number gutter inside the text view
+//
+// We considered NSRulerView but it interacts badly with SwiftUI's NSScrollView
+// hosting: installing a vertical ruler collapses the surrounding VStack
+// (header / tab bar / content all vanished). Drawing the gutter inside the
+// textView's own left textContainerInset sidesteps the scrollView's ruler
+// pipeline entirely.
+final class GutteredTextView: NSTextView {
+    static let gutterWidth: CGFloat = 44
     static let gutterFill = NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1)
+    static let gutterSeparator = NSColor.black.withAlphaComponent(0.35)
     static let lineNumberColor = NSColor(red: 0.45, green: 0.48, blue: 0.55, alpha: 1)
     static let currentLineColor = NSColor(red: 0.85, green: 0.87, blue: 0.92, alpha: 1)
+    private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
 
-    init(textView: NSTextView) {
-        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
-        self.clientView = textView
-        self.ruleThickness = 44
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSelectionChanged(_:)),
+            name: NSTextView.didChangeSelectionNotification,
+            object: self
+        )
     }
 
-    required init(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    @objc func handleTextDidChange(_ note: Notification) {
-        recomputeThickness()
-        needsDisplay = true
+    @objc private func handleSelectionChanged(_ note: Notification) {
+        invalidateGutter()
     }
 
-    @objc func handleBoundsDidChange(_ note: Notification) {
-        needsDisplay = true
+    func invalidateGutter() {
+        setNeedsDisplay(NSRect(x: 0, y: visibleRect.minY, width: Self.gutterWidth, height: visibleRect.height))
     }
 
-    private func recomputeThickness() {
-        guard let tv = clientView as? NSTextView else { return }
-        let lineCount = max(1, (tv.string as NSString).components(separatedBy: "\n").count)
-        let digits = max(2, String(lineCount).count)
-        let sample = String(repeating: "8", count: digits)
-        let size = (sample as NSString).size(withAttributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        ])
-        let desired = ceil(size.width) + 16
-        if abs(desired - ruleThickness) > 0.5 {
-            ruleThickness = desired
-        }
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        drawGutter(dirtyRect: rect)
     }
 
-    override func drawHashMarksAndLabels(in rect: NSRect) {
-        guard let tv = clientView as? NSTextView,
-              let lm = tv.layoutManager,
-              let tc = tv.textContainer else { return }
+    private func drawGutter(dirtyRect: NSRect) {
+        guard let lm = layoutManager, let tc = textContainer else { return }
 
+        let gutterRect = NSRect(x: 0, y: dirtyRect.minY, width: Self.gutterWidth, height: dirtyRect.height)
         Self.gutterFill.setFill()
-        rect.fill()
+        gutterRect.fill()
+        Self.gutterSeparator.setFill()
+        NSRect(x: Self.gutterWidth - 0.5, y: dirtyRect.minY, width: 0.5, height: dirtyRect.height).fill()
 
-        // Right-edge separator.
-        NSColor.black.withAlphaComponent(0.35).setFill()
-        NSRect(x: bounds.maxX - 0.5, y: 0, width: 0.5, height: bounds.height).fill()
-
-        let nsString = tv.string as NSString
-        let visibleRect = tv.visibleRect
-        let glyphRange = lm.glyphRange(forBoundingRect: visibleRect, in: tc)
+        let nsString = self.string as NSString
+        let inset = textContainerInset.height
+        // Map the dirty rect (textView coords) back to container coords for glyph lookup.
+        let containerRect = NSRect(x: 0,
+                                   y: dirtyRect.minY - inset,
+                                   width: tc.size.width,
+                                   height: dirtyRect.height)
+        let glyphRange = lm.glyphRange(forBoundingRect: containerRect, in: tc)
         let charRange = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-        let inset = tv.textContainerInset.height
-        let selectedRange = tv.selectedRange()
-        let cursorLine = lineNumber(at: selectedRange.location, in: nsString)
+        let cursorLine = Self.lineNumber(at: selectedRange().location, in: nsString)
 
-        let textFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        var paragraphIndex = lineNumber(at: charRange.location, in: nsString)
+        var paragraphIndex = Self.lineNumber(at: charRange.location, in: nsString)
         var charIndex = charRange.location
 
-        // Step through paragraphs covered by the visible range.
-        while charIndex <= NSMaxRange(charRange) && charIndex <= nsString.length {
+        while charIndex <= NSMaxRange(charRange), charIndex <= nsString.length {
             let paraRange = nsString.paragraphRange(for: NSRange(location: charIndex, length: 0))
             let paraGlyphRange = lm.glyphRange(forCharacterRange: paraRange, actualCharacterRange: nil)
-            var lineRect = lm.boundingRect(forGlyphRange: paraGlyphRange, in: tc)
-            lineRect.origin.y += inset - visibleRect.origin.y
+            let lineRect = lm.boundingRect(forGlyphRange: paraGlyphRange, in: tc)
+            let yInTextView = lineRect.origin.y + inset
 
-            let label = "\(paragraphIndex)"
-            let isCursor = paragraphIndex == cursorLine
+            let label = "\(paragraphIndex)" as NSString
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: textFont,
-                .foregroundColor: isCursor ? Self.currentLineColor : Self.lineNumberColor
+                .font: Self.labelFont,
+                .foregroundColor: paragraphIndex == cursorLine ? Self.currentLineColor : Self.lineNumberColor
             ]
-            let labelSize = (label as NSString).size(withAttributes: attrs)
-            let x = bounds.width - labelSize.width - 8
-            let y = lineRect.origin.y + (lineRect.height - labelSize.height) / 2
-            (label as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
+            let labelSize = label.size(withAttributes: attrs)
+            let x = Self.gutterWidth - labelSize.width - 8
+            let y = yInTextView + (lineRect.height - labelSize.height) / 2
+            label.draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
 
             paragraphIndex += 1
             charIndex = NSMaxRange(paraRange)
@@ -925,7 +919,7 @@ final class LineNumberRulerView: NSRulerView {
         }
     }
 
-    private func lineNumber(at location: Int, in text: NSString) -> Int {
+    static func lineNumber(at location: Int, in text: NSString) -> Int {
         let upper = min(max(location, 0), text.length)
         guard upper > 0 else { return 1 }
         var line = 1

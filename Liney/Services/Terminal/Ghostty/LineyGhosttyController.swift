@@ -1188,7 +1188,31 @@ private final class LineyGhosttySurfaceView: NSView {
     }
 
     @IBAction func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        let imageTypes: [NSPasteboard.PasteboardType] = [.tiff, .png, .fileURL]
+        if pb.availableType(from: imageTypes) != nil,
+           pb.availableType(from: [.string]) == nil,
+           let surface {
+            sendCtrlV(on: surface)
+            return
+        }
         _ = performBindingAction("paste_from_clipboard")
+    }
+
+    private func sendCtrlV(on surface: ghostty_surface_t) {
+        var press = ghostty_input_key_s()
+        press.action = GHOSTTY_ACTION_PRESS
+        press.mods = ghostty_input_mods_e(GHOSTTY_MODS_CTRL.rawValue)
+        press.consumed_mods = GHOSTTY_MODS_NONE
+        press.keycode = UInt32(kVK_ANSI_V)
+        press.text = nil
+        press.unshifted_codepoint = 0x76
+        press.composing = false
+        _ = ghostty_surface_key(surface, press)
+
+        var release = press
+        release.action = GHOSTTY_ACTION_RELEASE
+        _ = ghostty_surface_key(surface, release)
     }
 
     @IBAction override func selectAll(_ sender: Any?) {

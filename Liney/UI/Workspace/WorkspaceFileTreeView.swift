@@ -208,6 +208,32 @@ private struct FileTreeContent: View {
             NSPasteboard.general.setString(entry.url.path, forType: .string)
         case .changeDirectory:
             changeDirectory(to: entry.url)
+        case .delete:
+            confirmDelete(entry)
+        }
+    }
+
+    private func confirmDelete(_ entry: DirectoryTreeEntry) {
+        let alert = NSAlert()
+        alert.messageText = String(format: localized("fileTree.delete.confirmTitle"), entry.url.lastPathComponent)
+        alert.informativeText = localized("fileTree.delete.confirmMessage")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: localized("fileTree.delete.confirmButton"))
+        alert.addButton(withTitle: localized("fileTree.delete.cancelButton"))
+        // Ensure the destructive action isn't the keyboard default.
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try FileManager.default.trashItem(at: entry.url, resultingItemURL: nil)
+            reloadToken = UUID()
+        } catch {
+            let failure = NSAlert()
+            failure.messageText = localized("fileTree.delete.failedTitle")
+            failure.informativeText = error.localizedDescription
+            failure.alertStyle = .critical
+            failure.runModal()
         }
     }
 
@@ -226,6 +252,7 @@ enum FileTreeCommand {
     case openInPreview
     case copyPath
     case changeDirectory
+    case delete
 }
 
 private struct FileTreeRow: View {
@@ -330,6 +357,8 @@ private struct FileTreeRow: View {
         Button(localized("fileTree.menu.reveal")) { onCommand(.reveal, entry) }
         Button(localized("fileTree.menu.openExternal")) { onCommand(.openExternal, entry) }
         Button(localized("fileTree.menu.copyPath")) { onCommand(.copyPath, entry) }
+        Divider()
+        Button(localized("fileTree.menu.delete"), role: .destructive) { onCommand(.delete, entry) }
     }
 
     private func activate() {

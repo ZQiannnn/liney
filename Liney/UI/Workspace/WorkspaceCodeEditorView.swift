@@ -52,23 +52,23 @@ struct WorkspaceCodeEditorView: View {
         if state.isMarkdown {
             switch state.viewMode {
             case .source:
-                sourceView
+                sourceView()
             case .preview:
-                previewView
+                previewView()
             case .split:
                 HSplitView {
-                    sourceView
+                    sourceView(syncEnabled: true)
                         .frame(minWidth: 200)
-                    previewView
+                    previewView(syncEnabled: true)
                         .frame(minWidth: 200)
                 }
             }
         } else {
-            sourceView
+            sourceView()
         }
     }
 
-    private var sourceView: some View {
+    private func sourceView(syncEnabled: Bool = false) -> some View {
         VStack(spacing: 0) {
             if state.isFindBarVisible {
                 FindReplaceBar(state: state)
@@ -82,16 +82,37 @@ struct WorkspaceCodeEditorView: View {
                 language: state.languageHint,
                 controller: state.editorController,
                 matches: state.matches,
-                currentMatchIndex: state.currentMatchIndex
+                currentMatchIndex: state.currentMatchIndex,
+                onTopVisibleLine: syncEnabled ? { line in
+                    if state.splitDriver != .preview {
+                        state.splitDriver = .editor
+                        state.splitLineFromEditor = line
+                    }
+                } : nil,
+                scrollToLine: (syncEnabled && state.splitDriver == .preview) ? state.splitLineFromPreview : nil
             )
         }
     }
 
-    private var previewView: some View {
-        MarkdownPreviewView(
-            markdown: state.bufferContents,
-            baseURL: state.url.deletingLastPathComponent()
-        )
+    private func previewView(syncEnabled: Bool = false) -> some View {
+        VStack(spacing: 0) {
+            if state.isFindBarVisible {
+                PreviewFindBar(state: state, controller: state.previewFindController)
+            }
+            MarkdownPreviewView(
+                markdown: state.bufferContents,
+                baseURL: state.url.deletingLastPathComponent(),
+                syncEnabled: syncEnabled,
+                scrollToLine: (syncEnabled && state.splitDriver == .editor) ? state.splitLineFromEditor : nil,
+                onScrollLine: syncEnabled ? { line in
+                    if state.splitDriver != .editor {
+                        state.splitDriver = .preview
+                        state.splitLineFromPreview = line
+                    }
+                } : nil,
+                findController: state.previewFindController
+            )
+        }
     }
 
     // Hidden buttons capture the keyboard shortcuts. Esc is only active while
@@ -314,6 +335,23 @@ final class CodeEditorState: ObservableObject {
     @Published var saveError: String?
     @Published var viewMode: EditorViewMode
 
+    // Split-view scroll sync. `splitDriver` records whichever side last
+    // scrolled (user-initiated); the other side observes its line and follows.
+    // After 250 ms of inactivity, the driver releases so either side can take
+    // over next.
+    enum SplitDriver { case none, editor, preview }
+    @Published var splitDriver: SplitDriver = .none {
+        didSet {
+            guard splitDriver != .none else { return }
+            let captured = splitDriver
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                if self?.splitDriver == captured { self?.splitDriver = .none }
+            }
+        }
+    }
+    @Published var splitLineFromEditor: Int = 1
+    @Published var splitLineFromPreview: Int = 1
+
     // Find / Replace
     @Published var isFindBarVisible: Bool = false
     @Published var isReplaceMode: Bool = false
@@ -331,6 +369,7 @@ final class CodeEditorState: ObservableObject {
     @Published var replaceFocusRequest: Int = 0
 
     let editorController = EditorController()
+    let previewFindController = PreviewFindController()
     private var cancellables: Set<AnyCancellable> = []
 
     var isDirty: Bool { bufferContents != diskContents }
@@ -558,6 +597,27 @@ final class EditorController {
     }
 }
 
+// MARK: - Preview find controller
+
+/// Bridges the preview find bar to the WKWebView's native `find(_:configuration:)`
+/// API (macOS 11.3+). Holds a weak ref so the controller can be owned by the
+/// long-lived `CodeEditorState` while the WebView itself lives with the SwiftUI
+/// representable.
+final class PreviewFindController {
+    weak var webView: WKWebView?
+
+    func find(_ query: String, backwards: Bool, caseSensitive: Bool, completion: @escaping (Bool) -> Void) {
+        guard let webView, !query.isEmpty else { completion(false); return }
+        let cfg = WKFindConfiguration()
+        cfg.backwards = backwards
+        cfg.caseSensitive = caseSensitive
+        cfg.wraps = true
+        webView.find(query, configuration: cfg) { result in
+            completion(result.matchFound)
+        }
+    }
+}
+
 // MARK: - Find / Replace bar
 
 private struct FindReplaceBar: View {
@@ -693,6 +753,106 @@ private struct FindReplaceBar: View {
     private func localized(_ key: String) -> String { localization.string(key) }
 }
 
+// MARK: - Preview find bar
+
+/// Lightweight find bar for the rendered Markdown preview. Drives the
+/// WKWebView's native `find(_:)` (no replace; the preview is read-only).
+/// Reuses `state.findText` so the editor toolbar's magnifier and the source
+/// view's find bar share the query string.
+private struct PreviewFindBar: View {
+    @ObservedObject var state: CodeEditorState
+    let controller: PreviewFindController
+    @ObservedObject private var localization = LocalizationManager.shared
+    @FocusState private var focused: Bool
+    @State private var lastFound: Bool = true
+
+    var body: some View {
+        HStack(spacing: 6) {
+            fieldBox {
+                TextField(localized("editor.find.placeholder"), text: $state.findText)
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .font(.system(size: 12, design: .monospaced))
+                    .onSubmit { runFind(backwards: false) }
+                    .onChange(of: state.findText) { _ in runFind(backwards: false) }
+            }
+
+            optionToggle(symbol: "textformat", on: $state.caseSensitive, help: localized("editor.find.caseSensitive"))
+
+            if !state.findText.isEmpty, !lastFound {
+                Text(localized("editor.find.noResults"))
+                    .font(.system(size: 10))
+                    .foregroundStyle(LineyTheme.mutedText)
+            }
+
+            Spacer(minLength: 0)
+
+            iconBtn("chevron.up", help: localized("editor.find.previous"), enabled: !state.findText.isEmpty) {
+                runFind(backwards: true)
+            }
+            iconBtn("chevron.down", help: localized("editor.find.next"), enabled: !state.findText.isEmpty) {
+                runFind(backwards: false)
+            }
+            iconBtn("xmark", help: localized("editor.find.close")) { state.closeFindBar() }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(LineyTheme.paneHeaderBackground)
+        .overlay(alignment: .bottom) { Divider().overlay(LineyTheme.border) }
+        .onAppear {
+            focused = true
+            if !state.findText.isEmpty { runFind(backwards: false) }
+        }
+        .onChange(of: state.findFocusRequest) { _ in focused = true }
+        .onChange(of: state.caseSensitive) { _ in runFind(backwards: false) }
+    }
+
+    private func runFind(backwards: Bool) {
+        controller.find(state.findText, backwards: backwards, caseSensitive: state.caseSensitive) { found in
+            lastFound = found
+        }
+    }
+
+    private func fieldBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(LineyTheme.subtleFill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).stroke(LineyTheme.border.opacity(0.6), lineWidth: 0.5))
+    }
+
+    private func optionToggle(symbol: String, on: Binding<Bool>, help: String) -> some View {
+        Button { on.wrappedValue.toggle() } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 20)
+                .background(
+                    on.wrappedValue ? LineyTheme.accent.opacity(0.25) : .clear,
+                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                )
+                .foregroundStyle(on.wrappedValue ? LineyTheme.accent : LineyTheme.secondaryText)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private func iconBtn(_ symbol: String, help: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? LineyTheme.secondaryText : LineyTheme.mutedText.opacity(0.4))
+        .disabled(!enabled)
+        .help(help)
+    }
+
+    private func localized(_ key: String) -> String { localization.string(key) }
+}
+
 // MARK: - NSTextView wrapper
 
 private struct CodeTextView: NSViewRepresentable {
@@ -702,6 +862,12 @@ private struct CodeTextView: NSViewRepresentable {
     let controller: EditorController
     let matches: [NSRange]
     let currentMatchIndex: Int
+    /// Reports the 1-indexed line at the top of the visible region after the
+    /// user scrolls. Suppressed while a programmatic scroll is in flight.
+    var onTopVisibleLine: ((Int) -> Void)? = nil
+    /// When this value changes, scrolls the top visible line to the given
+    /// number. `nil` disables programmatic scrolling.
+    var scrollToLine: Int? = nil
 
     static let backgroundFill = NSColor(red: 0.085, green: 0.095, blue: 0.115, alpha: 1)
     static let foregroundFill = NSColor(red: 0.92, green: 0.93, blue: 0.95, alpha: 1)
@@ -766,12 +932,23 @@ private struct CodeTextView: NSViewRepresentable {
 
         controller.textView = textView
 
+        // Observe scroll for the split-view source-line sync.
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.boundsDidChange(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        context.coordinator.scrollView = scrollView
+
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         controller.textView = textView
+        context.coordinator.onTopVisibleLine = onTopVisibleLine
         if let storage = textView.textStorage as? CodeAttributedString, storage.language != language {
             storage.language = language
         }
@@ -782,6 +959,11 @@ private struct CodeTextView: NSViewRepresentable {
         }
         textView.isEditable = isEditable
         applyMatchHighlights(textView)
+
+        if let target = scrollToLine, target != context.coordinator.lastDrivenLine {
+            context.coordinator.lastDrivenLine = target
+            context.coordinator.scrollToLine(target)
+        }
     }
 
     private func applyMatchHighlights(_ tv: NSTextView) {
@@ -823,11 +1005,68 @@ private struct CodeTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodeTextView
-        init(_ parent: CodeTextView) { self.parent = parent }
+        weak var scrollView: NSScrollView?
+        var onTopVisibleLine: ((Int) -> Void)?
+        var lastDrivenLine: Int?
+        /// Set while a programmatic scrollTo is in flight so the resulting
+        /// bounds-change notification doesn't bounce back as a user scroll.
+        private var suppressUntil: Date = .distantPast
+        private var lastReportedLine: Int = 0
+
+        init(_ parent: CodeTextView) {
+            self.parent = parent
+            super.init()
+        }
+
+        deinit { NotificationCenter.default.removeObserver(self) }
+
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
             (tv as? GutteredTextView)?.invalidateGutter()
+        }
+
+        @objc func boundsDidChange(_ note: Notification) {
+            guard Date() >= suppressUntil,
+                  let onTop = onTopVisibleLine,
+                  let scrollView,
+                  let tv = scrollView.documentView as? NSTextView,
+                  let lm = tv.layoutManager,
+                  let tc = tv.textContainer else { return }
+            // Char index of the glyph at the top of the visible region.
+            let visible = scrollView.contentView.bounds
+            let containerY = visible.minY - tv.textContainerInset.height
+            let containerRect = NSRect(x: 0, y: max(0, containerY), width: tc.size.width, height: 1)
+            let glyphRange = lm.glyphRange(forBoundingRect: containerRect, in: tc)
+            let charIndex = lm.characterIndexForGlyph(at: glyphRange.location)
+            let line = GutteredTextView.lineNumber(at: charIndex, in: tv.string as NSString)
+            if line != lastReportedLine {
+                lastReportedLine = line
+                onTop(line)
+            }
+        }
+
+        func scrollToLine(_ line: Int) {
+            guard let scrollView, let tv = scrollView.documentView as? NSTextView,
+                  let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+            let nsString = tv.string as NSString
+            // Walk forward newline by newline until we hit the target line.
+            var idx = 0
+            var current = 1
+            let len = nsString.length
+            while current < line, idx < len {
+                let r = nsString.range(of: "\n", options: [], range: NSRange(location: idx, length: len - idx))
+                if r.location == NSNotFound { break }
+                idx = r.location + r.length
+                current += 1
+            }
+            let charRange = NSRange(location: idx, length: 0)
+            let glyphRange = lm.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+            let rect = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            let targetY = rect.origin.y + tv.textContainerInset.height - 8
+            suppressUntil = Date().addingTimeInterval(0.15)
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, targetY)))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
     }
 }
@@ -940,37 +1179,94 @@ final class GutteredTextView: NSTextView {
 private struct MarkdownPreviewView: NSViewRepresentable {
     let markdown: String
     let baseURL: URL
+    /// When set, the renderer injects scroll-sync JS so split-view can drive
+    /// the preview by source-line and be driven back by user scrolls.
+    var syncEnabled: Bool = false
+    /// Source line the editor wants the preview to scroll to. Reapplied on
+    /// every change; `nil` means "don't drive."
+    var scrollToLine: Int? = nil
+    /// Called when the user scrolls the preview; reports the source line of
+    /// the topmost visible anchor.
+    var onScrollLine: ((Int) -> Void)? = nil
+    /// Receives the live webView so the find bar can drive `webView.find(_:)`.
+    var findController: PreviewFindController? = nil
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        if syncEnabled {
+            config.userContentController.add(context.coordinator, name: "lineyPreviewScroll")
+        }
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsBackForwardNavigationGestures = false
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
+        findController?.webView = webView
         loadIfChanged(webView: webView, context: context)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onScrollLine = onScrollLine
+        findController?.webView = webView
         loadIfChanged(webView: webView, context: context)
+        if syncEnabled, let line = scrollToLine, line != context.coordinator.lastDrivenLine {
+            context.coordinator.lastDrivenLine = line
+            // Wait until the page is loaded — if not, navigationDelegate will
+            // replay this on didFinish.
+            context.coordinator.pendingScrollLine = line
+            context.coordinator.drivePendingScrollIfReady()
+        }
     }
 
     private func loadIfChanged(webView: WKWebView, context: Context) {
         // Skip reload when neither the markdown nor the baseURL changed —
         // re-rendering on every keystroke is expensive and flashes the view.
         if context.coordinator.lastMarkdown == markdown,
-           context.coordinator.lastBaseURL == baseURL {
+           context.coordinator.lastBaseURL == baseURL,
+           context.coordinator.lastSyncEnabled == syncEnabled {
             return
         }
         context.coordinator.lastMarkdown = markdown
         context.coordinator.lastBaseURL = baseURL
-        let html = MarkdownToHTMLRenderer.renderDocument(markdown, title: baseURL.lastPathComponent)
+        context.coordinator.lastSyncEnabled = syncEnabled
+        context.coordinator.isPageReady = false
+        let html = MarkdownToHTMLRenderer.renderDocument(
+            markdown,
+            title: baseURL.lastPathComponent,
+            includeScrollSync: syncEnabled
+        )
         webView.loadHTMLString(html, baseURL: baseURL)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var lastMarkdown: String?
         var lastBaseURL: URL?
+        var lastSyncEnabled: Bool = false
+        var onScrollLine: ((Int) -> Void)?
+        weak var webView: WKWebView?
+        var isPageReady: Bool = false
+        var pendingScrollLine: Int?
+        var lastDrivenLine: Int?
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "lineyPreviewScroll",
+                  let dict = message.body as? [String: Any],
+                  let line = dict["line"] as? Int else { return }
+            onScrollLine?(line)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isPageReady = true
+            drivePendingScrollIfReady()
+        }
+
+        func drivePendingScrollIfReady() {
+            guard isPageReady, let line = pendingScrollLine, let webView else { return }
+            pendingScrollLine = nil
+            webView.evaluateJavaScript("window.__lineyScrollToLine && window.__lineyScrollToLine(\(line));")
+        }
     }
 }

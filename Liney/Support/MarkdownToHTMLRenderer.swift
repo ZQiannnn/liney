@@ -22,9 +22,10 @@ nonisolated enum MarkdownToHTMLRenderer {
     // MARK: - Public API
 
     /// Renders Markdown into a complete, styled HTML document.
-    static func renderDocument(_ markdown: String, title: String = "") -> String {
+    static func renderDocument(_ markdown: String, title: String = "", includeScrollSync: Bool = false) -> String {
         let body = renderBody(markdown)
         let safeTitle = escape(title)
+        let syncScript = includeScrollSync ? "<script>\(scrollSyncScript)</script>" : ""
         return """
         <!DOCTYPE html>
         <html lang="en">
@@ -38,6 +39,7 @@ nonisolated enum MarkdownToHTMLRenderer {
         <article class="markdown-body">
         \(body)
         </article>
+        \(syncScript)
         </body>
         </html>
         """
@@ -48,17 +50,26 @@ nonisolated enum MarkdownToHTMLRenderer {
         let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         let lines = normalized.components(separatedBy: "\n")
-        return renderBlocks(lines)
+        return renderBlocks(lines, lineOffset: 0, annotate: true)
     }
 
     // MARK: - Block parsing
 
-    private static func renderBlocks(_ lines: [String]) -> String {
+    /// `annotate` adds `data-source-line="N"` (1-indexed) to each block element;
+    /// `lineOffset` shifts the indices so nested recursive calls report numbers
+    /// in the original document's coordinate space. We only annotate at the
+    /// outermost level — nested blocks inherit their parent's anchor.
+    private static func renderBlocks(_ lines: [String], lineOffset: Int = 0, annotate: Bool = false) -> String {
         var html = ""
         var index = 0
 
+        func attr(_ blockStart: Int) -> String {
+            annotate ? " data-source-line=\"\(lineOffset + blockStart + 1)\"" : ""
+        }
+
         while index < lines.count {
             let line = lines[index]
+            let blockStart = index
 
             // Blank line — skip.
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -76,20 +87,20 @@ nonisolated enum MarkdownToHTMLRenderer {
                 }
                 if index < lines.count { index += 1 } // consume closing fence
                 let langClass = fence.language.isEmpty ? "" : " class=\"language-\(escape(fence.language))\""
-                html += "<pre><code\(langClass)>\(escape(code.joined(separator: "\n")))</code></pre>\n"
+                html += "<pre\(attr(blockStart))><code\(langClass)>\(escape(code.joined(separator: "\n")))</code></pre>\n"
                 continue
             }
 
             // ATX heading.
             if let heading = atxHeading(line) {
-                html += "<h\(heading.level)>\(renderInline(heading.text))</h\(heading.level)>\n"
+                html += "<h\(heading.level)\(attr(blockStart))>\(renderInline(heading.text))</h\(heading.level)>\n"
                 index += 1
                 continue
             }
 
             // Horizontal rule.
             if isHorizontalRule(line) {
-                html += "<hr>\n"
+                html += "<hr\(attr(blockStart))>\n"
                 index += 1
                 continue
             }
@@ -107,7 +118,7 @@ nonisolated enum MarkdownToHTMLRenderer {
                     index += 1
                     if index < lines.count, isBlankLine(lines[index]) { break }
                 }
-                html += "<blockquote>\n\(renderBlocks(quoted))</blockquote>\n"
+                html += "<blockquote\(attr(blockStart))>\n\(renderBlocks(quoted))</blockquote>\n"
                 continue
             }
 
@@ -119,13 +130,14 @@ nonisolated enum MarkdownToHTMLRenderer {
                     tableLines.append(lines[index])
                     index += 1
                 }
-                html += renderTable(tableLines)
+                html += renderTable(tableLines, sourceLineAttr: attr(blockStart))
                 continue
             }
 
             // List (ordered or unordered).
             if listMarker(line) != nil {
                 var listLines: [String] = []
+                let listStartIndex = index
                 while index < lines.count {
                     let current = lines[index]
                     if isBlankLine(current) {
@@ -146,7 +158,7 @@ nonisolated enum MarkdownToHTMLRenderer {
                         break
                     }
                 }
-                html += renderList(listLines)
+                html += renderList(listLines, sourceLineAttr: attr(listStartIndex))
                 continue
             }
 
@@ -163,7 +175,7 @@ nonisolated enum MarkdownToHTMLRenderer {
                 index += 1
             }
             if !paragraph.isEmpty {
-                html += "<p>\(renderParagraph(paragraph))</p>\n"
+                html += "<p\(attr(blockStart))>\(renderParagraph(paragraph))</p>\n"
             }
         }
 
@@ -264,14 +276,14 @@ nonisolated enum MarkdownToHTMLRenderer {
     }
 
     /// Renders a contiguous run of list lines, handling nesting by indentation.
-    private static func renderList(_ lines: [String]) -> String {
+    private static func renderList(_ lines: [String], sourceLineAttr: String = "") -> String {
         guard let firstMarker = lines.first(where: { listMarker($0) != nil }).flatMap(listMarker) else {
             return ""
         }
         let ordered = firstMarker.ordered
         let baseIndent = firstMarker.indent
 
-        var html = ordered ? "<ol>\n" : "<ul>\n"
+        var html = ordered ? "<ol\(sourceLineAttr)>\n" : "<ul\(sourceLineAttr)>\n"
         var index = 0
         while index < lines.count {
             let line = lines[index]
@@ -377,7 +389,7 @@ nonisolated enum MarkdownToHTMLRenderer {
         return cells
     }
 
-    private static func renderTable(_ lines: [String]) -> String {
+    private static func renderTable(_ lines: [String], sourceLineAttr: String = "") -> String {
         guard lines.count >= 2 else { return "" }
         let header = splitTableRow(lines[0])
         let alignments = splitTableRow(lines[1]).map(columnAlignment)
@@ -393,7 +405,7 @@ nonisolated enum MarkdownToHTMLRenderer {
             }
         }
 
-        var html = "<table>\n<thead>\n<tr>"
+        var html = "<table\(sourceLineAttr)>\n<thead>\n<tr>"
         for (column, cell) in header.enumerated() {
             html += "<th\(alignmentAttr(column))>\(renderInline(cell.trimmingCharacters(in: .whitespaces)))</th>"
         }
@@ -728,5 +740,94 @@ nonisolated enum MarkdownToHTMLRenderer {
         pre { background: #161b22; }
         blockquote { color: #9ca3af; }
     }
+    """
+
+    // Injected when split-view scroll sync is enabled. Builds a sorted table
+    // [(sourceLine, elementTop)] from every `[data-source-line]` element, then:
+    //   - exposes window.__lineyScrollToLine(line) — called by Swift when the
+    //     editor's top visible source line changes; interpolates between the
+    //     two surrounding anchors for sub-block precision;
+    //   - posts the topmost visible anchor's line back to Swift on scroll, so
+    //     scrolling in the preview drives the editor.
+    // `suppressUntil` debounces feedback loops: when Swift drives a scroll,
+    // it sets `window.__lineySyncFromSwift = true` first so the scroll event
+    // we generate doesn't bounce back.
+    private static let scrollSyncScript = """
+    (function() {
+      let anchors = [];
+      function rebuild() {
+        const els = document.querySelectorAll('[data-source-line]');
+        anchors = [];
+        for (const el of els) {
+          const line = parseInt(el.getAttribute('data-source-line'), 10);
+          if (!isNaN(line)) anchors.push({ line, top: el.offsetTop, el });
+        }
+        anchors.sort((a, b) => a.line - b.line);
+      }
+
+      window.__lineyScrollToLine = function(line) {
+        if (!anchors.length) return;
+        // Binary search for the largest anchor.line <= line.
+        let lo = 0, hi = anchors.length - 1, idx = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (anchors[mid].line <= line) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const a = anchors[idx];
+        const b = anchors[idx + 1];
+        let target;
+        if (b && b.line > a.line) {
+          const t = (line - a.line) / (b.line - a.line);
+          target = a.top + t * (b.top - a.top);
+        } else {
+          target = a.top;
+        }
+        window.__lineySyncFromSwift = true;
+        window.scrollTo({ top: Math.max(0, target - 12), behavior: 'auto' });
+        // Clear suppression after the next scroll event lands.
+        setTimeout(() => { window.__lineySyncFromSwift = false; }, 80);
+      };
+
+      function topVisibleLine() {
+        if (!anchors.length) return 1;
+        const y = window.scrollY;
+        let lo = 0, hi = anchors.length - 1, idx = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (anchors[mid].top <= y) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const a = anchors[idx];
+        const b = anchors[idx + 1];
+        if (b && b.top > a.top) {
+          const t = (y - a.top) / (b.top - a.top);
+          return Math.round(a.line + t * (b.line - a.line));
+        }
+        return a.line;
+      }
+
+      let scheduled = false;
+      window.addEventListener('scroll', () => {
+        if (window.__lineySyncFromSwift) return;
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(() => {
+          scheduled = false;
+          const line = topVisibleLine();
+          if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.lineyPreviewScroll) {
+            window.webkit.messageHandlers.lineyPreviewScroll.postMessage({ line });
+          }
+        });
+      }, { passive: true });
+
+      // Rebuild anchors after images load (their height isn't known at first
+      // layout, which would otherwise leave stale offsetTop values).
+      window.addEventListener('load', rebuild);
+      document.addEventListener('DOMContentLoaded', rebuild);
+      const imgs = document.images;
+      for (const img of imgs) {
+        if (!img.complete) img.addEventListener('load', rebuild, { once: true });
+      }
+      rebuild();
+    })();
     """
 }
